@@ -1315,6 +1315,7 @@ function bindControls() {
     win.querySelector('#so-settings-btn').addEventListener('click', () => {
         const panel = win.querySelector('#so-settings');
         const open = panel.classList.toggle('open');
+        win.classList.toggle('so-settings-open', open);   // lets CSS free up space (hide mode toolbar)
         if (open) { refreshProfiles(); populateSysPromptPresets(); }
     });
     win.querySelector('#so-profile-refresh').addEventListener('click', refreshProfiles);
