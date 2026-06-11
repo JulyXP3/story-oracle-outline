@@ -299,11 +299,6 @@ function buildPersonaBlock(personaId, mode) {
 // role-preserving, marker-aware prompt from that frozen curated copy.
 const ENABLE_SYSPROMPT_PRESET = true;
 
-// 剧情参谋总开关（v1.14.2）：false = 完全隐藏参谋模式——🧭 按钮、注入深度设置
-// 项不显示，注入与方案条、提醒一律停用；代码全部保留。要启用：把它改成 true
-// 即可，无其它步骤。当前关闭：先自测，再放给社区。
-const ENABLE_ADVISOR_MODE = false;
-
 const defaults = {
     mode: 'direct',            // 'direct' | 'profile'
     // direct mode
