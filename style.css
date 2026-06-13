@@ -298,6 +298,26 @@
 
 #so-sysprompt:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* system-prompt mode editor: a title row with a [↺ reset to default] button */
+.so-sysprompt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.so-sysprompt-head > span { opacity: 0.7; }
+#so-sysprompt-reset {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.82em;
+    padding: 2px 9px;
+    border-radius: 7px;
+    color: var(--SmartThemeBodyColor, #e6e6e6);
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
+    opacity: 0.85;
+    transition: opacity 0.15s, background-color 0.15s, transform 0.1s;
+}
+#so-sysprompt-reset:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
+#so-sysprompt-reset:active { transform: scale(0.97); }
+
 /* assistant message header: label on the left, quick-copy button on the right */
 .so-assistant .so-role {
     display: flex;

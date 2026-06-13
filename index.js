@@ -299,6 +299,21 @@ function buildPersonaBlock(personaId, mode) {
 // role-preserving, marker-aware prompt from that frozen curated copy.
 const ENABLE_SYSPROMPT_PRESET = true;
 
+// 各模式可在设置里查看 / 修改的系统提示词。剧情参谋（advisor）暂不纳入——它仍是
+// 实验性功能，提示词保持内置、不开放修改。
+// chat 沿用旧行为：提示词正文直接存在 `systemPrompt` 里。
+// diagnose / lorebook 存的是【覆盖】(override)，默认空串 —— 空 = 用内置默认，这样
+// 没改过的人能随版本继续拿到内置提示词的改进；用户一旦改动就冻结成自己这份，点
+// 「重置为默认」即把覆盖清空、退回内置。
+const SYSPROMPT_MODES = [
+    { id: 'chat',     label: '普通聊天',   key: 'systemPrompt',         builtin: DEFAULT_SYSTEM_PROMPT },
+    { id: 'diagnose', label: '诊断 🩺',    key: 'diagnoseSystemPrompt', builtin: DIAGNOSE_SYSTEM_PROMPT },
+    { id: 'lorebook', label: '世界书 📖',  key: 'lorebookSystemPrompt', builtin: LOREBOOK_SYSTEM_PROMPT },
+];
+
+// 设置里「系统提示词」文本框当前正在编辑哪个模式（仅 UI 状态、不持久化，每次会话默认 chat）。
+let sysPromptEditMode = 'chat';
+
 const defaults = {
     mode: 'direct',            // 'direct' | 'profile'
     // direct mode
@@ -312,6 +327,10 @@ const defaults = {
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    // 诊断 / 世界书模式的系统提示词【覆盖】。空串 = 用内置默认（见 SYSPROMPT_MODES）。
+    // 参谋模式的提示词暂不开放修改，故此处不含 advisor。
+    diagnoseSystemPrompt: '',
+    lorebookSystemPrompt: '',
     sysPromptPresetName: '',   // '' = use systemPrompt textarea; else name of a Chat Completion preset
     // Frozen, per-preset curations. Keyed by preset name -> { items:[...], curatedAt }.
     // Each item is a kept block in final (possibly reordered) order:
@@ -1570,6 +1589,10 @@ function buildWindow() {
             </label>
             <div class="so-hint">给神谕套一层“说话腔调”，只改变语气与文采，不改变其分析职责。选「普通」即关闭人格（默认）。使用预设时，人格默认关闭、以免与预设自带的角色声线冲突；若选择某个人格，它会叠加在预设之上。参谋 / 世界书模式下同样叠加（人格只改语气，方案与条目正文的格式不受影响）。诊断模式下不生效。</div>
 
+            <label class="so-row"><span>系统提示词（选择要查看 / 修改的模式）</span>
+                <select id="so-sysprompt-which"></select>
+            </label>
+
             <div id="so-sysprompt-preset-wrap">
             <label class="so-row"><span>系统提示词来源（补全预设）</span>
                 <div class="so-profile-row">
@@ -1581,9 +1604,14 @@ function buildWindow() {
             <div class="so-hint" id="so-sysprompt-preset-hint"></div>
             </div>
 
-            <label class="so-field"><span>系统提示词</span>
+            <div class="so-field">
+                <div class="so-sysprompt-head">
+                    <span>系统提示词</span>
+                    <button type="button" id="so-sysprompt-reset" title="恢复为内置默认提示词">↺ 重置为默认</button>
+                </div>
                 <textarea id="so-sysprompt" rows="5"></textarea>
-            </label>
+            </div>
+            <div class="so-hint" id="so-sysprompt-which-hint"></div>
         </div>
 
         <div id="so-lb-bar">
@@ -1794,7 +1822,27 @@ function bindControls() {
         const cur = getSettings().sysPromptPresetName;
         if (cur) openCuration(cur);
     });
-    bind('#so-sysprompt', 'systemPrompt');
+    // 系统提示词：上方下拉决定文本框正在编辑哪个模式的提示词；文本框各模式共用，
+    // 写入时按当前所选模式写到对应的 key（chat: systemPrompt；diagnose/lorebook: 覆盖）。
+    win.querySelector('#so-sysprompt-which').addEventListener('change', (e) => {
+        sysPromptEditMode = sysPromptModeDef(e.target.value).id;
+        loadSysPromptForMode();
+    });
+    win.querySelector('#so-sysprompt').addEventListener('input', (e) => {
+        getSettings()[sysPromptModeDef(sysPromptEditMode).key] = e.target.value;
+        save();
+        if (sysPromptEditMode !== 'chat') applySysPromptModeUiState(); // 实时刷新「内置 / 已自定义」提示
+    });
+    win.querySelector('#so-sysprompt-reset').addEventListener('click', () => {
+        const def = sysPromptModeDef(sysPromptEditMode);
+        if (!confirm(`确定把「${def.label}」的系统提示词重置为内置默认吗？当前的修改会丢失。`)) return;
+        const s2 = getSettings();
+        if (def.id === 'chat') s2.systemPrompt = DEFAULT_SYSTEM_PROMPT;  // 恢复随扩展附带的默认
+        else s2[def.key] = '';                                          // 清空覆盖 → 退回内置
+        save();
+        loadSysPromptForMode();
+        addSystemNote(`已将「${def.label}」的系统提示词重置为内置默认。`);
+    });
 
     // send
     sendBtn.addEventListener('click', onSend);
@@ -1837,8 +1885,20 @@ function loadSettingsIntoForm() {
     win.querySelector('#so-adv-preset').checked = !!s.advisorUsePreset;
     updateWiHint();
     populatePersonas();
-    win.querySelector('#so-sysprompt').value = s.systemPrompt;
+    // 系统提示词模式编辑器：首次用 SYSPROMPT_MODES 填充模式下拉，再把当前所选模式的
+    // 提示词载入共用文本框。
+    const whichSel = win.querySelector('#so-sysprompt-which');
+    if (whichSel && !whichSel.options.length) {
+        for (const m of SYSPROMPT_MODES) {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.label;
+            whichSel.appendChild(opt);
+        }
+    }
+    if (whichSel) whichSel.value = sysPromptEditMode;
     populateSysPromptPresets();
+    loadSysPromptForMode();
     applyModeVisibility();
     updateBadge();
 }
@@ -2186,6 +2246,21 @@ function resolveSystemPrompt(s) {
     return s.systemPrompt;
 }
 
+// Look up a system-prompt mode definition (falls back to chat for unknown ids,
+// including 'advisor' — not user-editable yet).
+function sysPromptModeDef(id) {
+    return SYSPROMPT_MODES.find((m) => m.id === id) || SYSPROMPT_MODES[0];
+}
+
+// The effective prompt for a mode: the user's override when non-empty, else the
+// built-in default. (chat's key always holds text, so the fallback only matters
+// for diagnose / lorebook, whose overrides start empty.)
+function resolveModePrompt(s, id) {
+    const def = sysPromptModeDef(id);
+    const v = s[def.key];
+    return (typeof v === 'string' && v.trim() !== '') ? v : def.builtin;
+}
+
 function populateSysPromptPresets() {
     const wrap = win.querySelector('#so-sysprompt-preset-wrap');
     if (!ENABLE_SYSPROMPT_PRESET) {
@@ -2217,7 +2292,7 @@ function populateSysPromptPresets() {
         if (s.sysPromptPresetName) { s.sysPromptPresetName = ''; save(); }
         sel.value = '';
     }
-    applySysPromptPresetUiState();
+    applySysPromptModeUiState();
 }
 
 function applySysPromptPresetUiState() {
@@ -2226,9 +2301,11 @@ function applySysPromptPresetUiState() {
     const hint = win.querySelector('#so-sysprompt-preset-hint');
     const recurate = win.querySelector('#so-sysprompt-preset-recurate');
     const active = !!s.sysPromptPresetName;
-    // When a preset is selected, the textarea (and the built-in short prompt it
-    // holds) is fully disabled — no fallback, per design.
-    if (ta) ta.disabled = active;
+    // When a preset is selected, the chat textarea (and the built-in short prompt
+    // it holds) is fully disabled — no fallback, per design. The textarea is now
+    // shared across edit modes, though, so only disable it while CHAT is the mode
+    // being edited (a preset only ever replaces the chat prompt).
+    if (ta) ta.disabled = active && sysPromptEditMode === 'chat';
     if (recurate) recurate.style.display = active ? '' : 'none';
     if (!hint) return;
     hint.classList.remove('so-hint-error');
@@ -2247,6 +2324,46 @@ function applySysPromptPresetUiState() {
     } else {
         hint.textContent = `预设「${s.sysPromptPresetName}」尚未挑选内容。点[重新挑选]开始，或重新从下拉中选择以打开挑选界面。`;
         hint.classList.add('so-hint-error');
+    }
+}
+
+// Point the shared system-prompt textarea at the currently-selected edit mode
+// and refresh the surrounding UI state.
+function loadSysPromptForMode() {
+    const s = getSettings();
+    const ta = win.querySelector('#so-sysprompt');
+    if (!ta) return;
+    const def = sysPromptModeDef(sysPromptEditMode);
+    // chat shows its stored text verbatim (may be blank by the user's choice);
+    // diagnose / lorebook show the override, or the built-in when not customized.
+    ta.value = (def.id === 'chat') ? s.systemPrompt : resolveModePrompt(s, def.id);
+    applySysPromptModeUiState();
+}
+
+// Coordinate the system-prompt UI for the selected edit mode. The preset-source
+// row only applies to chat (a curated preset replaces the chat textarea); for
+// diagnose / lorebook it's hidden, the textarea is always editable, and a hint
+// explains the override-vs-built-in state.
+function applySysPromptModeUiState() {
+    const def = sysPromptModeDef(sysPromptEditMode);
+    const presetWrap = win.querySelector('#so-sysprompt-preset-wrap');
+    const ta = win.querySelector('#so-sysprompt');
+    const hint = win.querySelector('#so-sysprompt-which-hint');
+    if (def.id === 'chat') {
+        if (presetWrap && ENABLE_SYSPROMPT_PRESET) presetWrap.style.display = '';
+        applySysPromptPresetUiState();   // disables the textarea if a preset is active
+        if (hint) { hint.textContent = ''; hint.classList.remove('so-hint-error'); }
+        return;
+    }
+    if (presetWrap) presetWrap.style.display = 'none';   // presets don't replace these prompts
+    if (ta) ta.disabled = false;
+    if (hint) {
+        const s = getSettings();
+        const customized = typeof s[def.key] === 'string' && s[def.key].trim() !== '';
+        hint.classList.remove('so-hint-error');
+        hint.textContent = customized
+            ? `已自定义「${def.label}」的系统提示词。点 [↺ 重置为默认] 可恢复内置版本。`
+            : `这是「${def.label}」的内置系统提示词，可直接修改。未修改时会随扩展更新自动改进；改后点 [↺ 重置为默认] 恢复。`;
     }
 }
 
@@ -2957,7 +3074,7 @@ function buildChatStatSection() {
 }
 
 function buildDiagnosePrompt(ctx, s) {
-    const parts = [DIAGNOSE_SYSTEM_PROMPT];
+    const parts = [resolveModePrompt(s, 'diagnose')];
 
     // World info carries the card's MVU rules (blue/constant entries always fire).
     parts.push('=== 角色卡 MVU 规则（来自世界书）===\n' +
@@ -2979,7 +3096,7 @@ function buildDiagnosePrompt(ctx, s) {
 }
 
 function buildLorebookPrompt(ctx, s) {
-    const parts = [LOREBOOK_SYSTEM_PROMPT];
+    const parts = [resolveModePrompt(s, 'lorebook')];
 
     // 说话人格（仅当用户主动选了某个人格时）：管家指令之上叠一层语气皮肤，
     // 附带职责调整 + 结构保护（区块格式与围栏正文不受人格影响）。
@@ -3114,6 +3231,27 @@ function stripMechanismBlocks(text) {
     out = out.replace(/<UpdateVariable>[\s\S]*?<\/UpdateVariable>/gi, '');
     // 被截断、没闭合的尾部区块也剥掉（开标签一路到结尾）。
     out = out.replace(/<UpdateVariable>[\s\S]*$/i, '');
+    return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// 思维链（CoT）标签——某些自定义补全预设或推理模型会把 <think> / <thinking> 这类
+// 思考区块直接吐进回复正文里。主聊天靠自带管线把它们藏起来，神谕没有那条管线，于是
+// 它们会原样显示在气泡里；用户的「清理思维链」正则往往是按某一个预设调的，常常漏网。
+// 所以这里做一道内置兜底，用在普通 / 参谋模式的回复上（显示 + 历史两头都剥）。诊断 /
+// 世界书模式不走这里（它们各自带 <UpdateVariable> / <LorebookEdit> 区块，需原样保留）。
+const REASONING_TAGS = ['think', 'thinking', 'thought', 'reasoning', 'reflection', 'cot'];
+
+function stripReasoningTags(text) {
+    let out = String(text || '');
+    for (const tag of REASONING_TAGS) {
+        // 1) 成对区块（大小写不敏感、跨行、容忍属性）——最常见的情况，连内容一起删。
+        out = out.replace(new RegExp('<' + tag + '\\b[^>]*>[\\s\\S]*?<\\/' + tag + '\\s*>', 'gi'), '');
+        // 2) 被截断、没闭合的开标签——从开标签一路删到结尾（同 stripMechanismBlocks）。
+        out = out.replace(new RegExp('<' + tag + '\\b[^>]*>[\\s\\S]*$', 'i'), '');
+        // 3) 任何残留的孤立标签（如推理放在单独字段、只漏出一个 </think>）——只删标签本身、
+        //    保留周围文字，确保标签字面量绝不残留在屏幕上。
+        out = out.replace(new RegExp('<\\/?' + tag + '\\b[^>]*>', 'gi'), '');
+    }
     return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -3495,11 +3633,17 @@ async function generateReply() {
             let cleanText = finalText;
             if (mechStrip) {
                 cleanText = stripMechanismBlocks(finalText);
+                // Backstop for CoT leakage: some custom presets / reasoning models
+                // emit visible <think>/<thinking> blocks the oracle has no pipeline
+                // to hide (the main chat does). Strip them from display AND history
+                // so an imperfect — or absent — thinking-strip regex can't leave
+                // them on screen, and they never re-feed into the next turn.
+                cleanText = stripReasoningTags(cleanText);
                 if (!cleanText) {
-                    // The whole reply was mechanism block(s) — show why instead
-                    // of a blank bubble, and keep history non-empty (some APIs
-                    // reject empty message content on the next turn).
-                    cleanText = '（这条回复只包含主聊天的机制区块（如 <UpdateVariable>），已自动隐藏。）';
+                    // The whole reply was hidden content — show why instead of a
+                    // blank bubble, and keep history non-empty (some APIs reject
+                    // empty message content on the next turn).
+                    cleanText = '（这条回复只剩被自动隐藏的内容——主聊天机制区块（如 <UpdateVariable>）或思维链（如 <think>）。）';
                 }
                 if (cleanText !== finalText) contentEl.textContent = cleanText;
             }
