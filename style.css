@@ -2,6 +2,10 @@
  * Accent is derived from the active theme (quote color), so it blends with
  * whatever skin is in use rather than imposing a fixed palette. */
 
+/* 用户功能请求：ST 聊天输入栏（#leftSendForm）里的神谕快捷按钮 🌙。尺寸 / 悬停沿用 ST 原生图标
+   （.interactable + fa-）；只着主题强调色以便一眼认出。它在 #so-window 之外，故直接用主题色而非 --so-accent。 */
+#so-chatbar-button { color: var(--SmartThemeQuoteColor, #8ab4f8); }
+
 #so-window {
     --so-accent: var(--SmartThemeQuoteColor, #8ab4f8);
     --so-radius: 14px;

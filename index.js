@@ -446,6 +446,7 @@ const defaults = {
     autoDiagnoseDelayMs: 1200,
     worldInfoMode: 'off',      // 'off' | 'st' (constant + keyword) | 'all' (every entry)
     sendTemperature: true,     // include temperature in the request (some models reject it)
+    showChatBarButton: false,  // 用户功能请求：在 ST 聊天输入栏（☰ 旁）放一个 🌙 快捷按钮一键开 / 关神谕窗口；默认关、设置里开
     // Lorebook mode: which book(s) to load. '' = every currently-active book;
     // otherwise the exact name of a single world book.
     lorebookTarget: '',
@@ -559,6 +560,7 @@ function init() {
     getSettings();
     injectWandButton();
     buildWindow();
+    syncChatBarButton();   // 用户功能请求：按设置在聊天栏放 / 撤快捷按钮
     loadRegexEngine(); // warm the cache so it's ready by first send
 
     // Advisor plan lifecycle: re-register (or clear) the injection whenever a
@@ -3618,6 +3620,32 @@ function injectWandButton() {
     menu.appendChild(item);
 }
 
+// 用户功能请求：在 ST 聊天输入栏（#leftSendForm，紧挨 ☰ 菜单键）放一个一键开 / 关神谕侧窗的小按钮（🌙）。
+// 默认关——仅当神谕设置里勾了「聊天栏快捷按钮」(showChatBarButton) 才出现；与魔棒入口并存、互不影响。
+// 复用 ST 自带的 .interactable / fa- 图标样式，故外观与 ☰ 等原生按钮一致（着色见 style.css）。
+function injectChatBarButton() {
+    const bar = document.getElementById('leftSendForm');
+    if (!bar || document.getElementById('so-chatbar-button')) return;
+    const btn = document.createElement('div');
+    btn.id = 'so-chatbar-button';
+    btn.className = 'fa-solid fa-moon interactable';
+    btn.title = '故事神谕 —— 点击开 / 关侧窗';
+    btn.tabIndex = 0;
+    btn.addEventListener('click', () => toggleWindow());   // 无参 = 切换开 / 关
+    bar.appendChild(btn);
+}
+
+function removeChatBarButton() {
+    const btn = document.getElementById('so-chatbar-button');
+    if (btn) btn.remove();
+}
+
+// 按设置同步聊天栏按钮的有无（init 时 + 设置里勾选 / 取消时调用）。
+function syncChatBarButton() {
+    if (getSettings().showChatBarButton) injectChatBarButton();
+    else removeChatBarButton();
+}
+
 /* ------------------------------------------------------------------ *
  * The floating window
  * ------------------------------------------------------------------ */
@@ -3693,6 +3721,7 @@ function buildWindow() {
             </div>
 
             <label class="so-check"><input id="so-stream" type="checkbox"><span>流式输出</span></label>
+            <label class="so-check"><input id="so-chatbar-toggle" type="checkbox"><span>在聊天输入栏显示快捷按钮（🌙 一键开 / 关神谕）</span></label>
 
             <label class="so-field"><span>上下文深度（消息条数，-1 = 全部，0 = 不带）</span>
                 <input id="so-depth" type="number" step="1" min="-1">
@@ -4144,6 +4173,12 @@ function bindControls() {
     bind('#so-apikey', 'apiKey', (v) => v.trim());
     bind('#so-model', 'model', (v) => v.trim());
     bind('#so-stream', 'stream');
+    // 用户功能请求：聊天栏快捷按钮开关——改设置后立刻放 / 撤按钮（不只是存）。
+    win.querySelector('#so-chatbar-toggle').addEventListener('change', (e) => {
+        getSettings().showChatBarButton = e.target.checked;
+        save();
+        syncChatBarButton();
+    });
     bind('#so-profile', 'profileId');
     bind('#so-temp', 'temperature', (v) => parseFloat(v));
     bind('#so-maxtok', 'maxTokens', (v) => parseInt(v, 10));
@@ -4223,6 +4258,7 @@ function loadSettingsIntoForm() {
     win.querySelector('#so-adv-depth').value = s.advisorDepth;
     win.querySelector('#so-card').checked = !!s.includeCard;
     win.querySelector('#so-stat').checked = !!s.chatIncludeStat;
+    win.querySelector('#so-chatbar-toggle').checked = !!s.showChatBarButton;
     win.querySelector('#so-regex').checked = !!s.applyRegex;
     win.querySelector('#so-wi').value = s.worldInfoMode;
     win.querySelector('#so-sendtemp').checked = !!s.sendTemperature;
