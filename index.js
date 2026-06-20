@@ -438,6 +438,10 @@ const defaults = {
     // 没有它，模型会从剧情里的状态栏残影 / 自身想象中自信地编出数值（v1.14.6）。
     // 大状态卡 + 频繁提问会吃 token，可在设置里关掉（关掉后会改为如实拒答数值）。
     chatIncludeStat: true,
+    // 普通聊天 / 剧情参谋模式附带「其它扩展维护的世界信息」（世界引擎 World Engine 等，或任何注册到
+    // window.__ST_CONTEXT_PROVIDERS__ 的扩展）。让神谕能读到主聊天之外、扩展自己系统里保存的后台世界
+    // 状态。无相关扩展时自动为空、无开销。喂的是完整数据（含全部字段），大状态卡会吃 token，可在此关掉。
+    chatIncludeWorld: true,
     applyRegex: true,          // run ST's prompt-altering regex (thinking strip, summaries, etc.)
     // 自动诊断（用户功能请求）：开启后，每收到一条新的主聊天 AI 回复，就在后台跑一次诊断
     // 并自动应用修复（见 maybeAutoDiagnose / runAutoDiagnose）。autoDiagnoseWarned 记录「不再
@@ -513,6 +517,7 @@ let advisorMode = false;
 let advStatData = '';       // stringified current MVU stat_data for advisor sends
                             // (computed fresh in generateReply, '' when no MVU)
 let chatStatData = '';      // same, for NORMAL mode (gated by s.chatIncludeStat)
+let chatWorldData = '';     // 外部扩展（世界引擎等）世界信息，普通 / 参谋模式附带（gated by s.chatIncludeWorld）
 let planBarEl = null;       // the ONE plan strip element — lives inside the window
                             // OR reparented into the floating container (never both)
 let planFloat = null;       // floating container shown when window closed + plan active
@@ -537,6 +542,25 @@ jQuery(() => {
 
 function getCtx() {
     return SillyTavern.getContext();
+}
+
+// 统一「确定吗？」弹窗：优先用 ST 自带的主题化弹窗（手机 / PC 一致，在 PWA / 应用内浏览器里也可靠），
+// 不可用时（极旧的 ST 或单测 jsdom 环境）回退到浏览器原生 confirm。返回 Promise<boolean>。破坏性操作
+// （清空侧聊 / 清空概要 / 重置提示词 / 退出弧线）共用，替代原生 confirm() 在手机上那个出戏的裸系统框。
+async function uiConfirm(message) {
+    try {
+        const ctx = getCtx();
+        if (ctx && typeof ctx.callGenericPopup === 'function' && ctx.POPUP_TYPE) {
+            const result = await ctx.callGenericPopup(message, ctx.POPUP_TYPE.CONFIRM, '', {
+                okButton: '确定',
+                cancelButton: '取消',
+            });
+            return Boolean(result); // AFFIRMATIVE=1 → true；取消 / 关闭 → null|0 → false
+        }
+    } catch (e) {
+        console.warn('[Story Oracle] uiConfirm 弹窗失败，回退原生 confirm：', e);
+    }
+    return typeof confirm === 'function' ? confirm(message) : true;
 }
 
 function getSettings() {
@@ -3753,6 +3777,7 @@ function buildWindow() {
                     </label>
                     <label class="so-check"><input id="so-card" type="checkbox"><span>包含角色卡（描述 / 性格 / 场景）</span></label>
                     <label class="so-check"><input id="so-stat" type="checkbox"><span>附带变量状态（MVU stat_data，普通模式）—— 数值问题的权威来源；关掉则如实拒答数值</span></label>
+                    <label class="so-check"><input id="so-world" type="checkbox"><span>附带「世界引擎」后台世界状态（普通 / 参谋模式）—— 目前仅适配世界引擎（World Engine，含本机改版）的当前版本；其它世界状态类扩展需日后单独适配。喂完整数据较吃 token，未识别到相关扩展时无开销</span></label>
                     <label class="so-check"><input id="so-regex" type="checkbox"><span>应用剧情正则（剥离思维链 / 状态栏、使用总结）—— 与主聊天保持一致</span></label>
 
                     <label class="so-row"><span>世界书 / 知识库</span>
@@ -4205,9 +4230,9 @@ function bindControls() {
         setSummary(e.target.value);
         updateSummaryIndicator(e.target.value);
     });
-    win.querySelector('#so-summary-clear').addEventListener('click', () => {
+    win.querySelector('#so-summary-clear').addEventListener('click', async () => {
         const ta = win.querySelector('#so-summary-text');
-        if (ta.value.trim() && !confirm('确定清空本聊天的剧情概要吗？')) return;
+        if (ta.value.trim() && !(await uiConfirm('确定清空本聊天的剧情概要吗？'))) return;
         ta.value = '';
         setSummary('');
         updateSummaryIndicator('');
@@ -4258,6 +4283,7 @@ function bindControls() {
     win.querySelector('#so-adv-depth').addEventListener('input', () => applyPlanInjection());
     bind('#so-card', 'includeCard');
     bind('#so-stat', 'chatIncludeStat');
+    bind('#so-world', 'chatIncludeWorld');
     bind('#so-regex', 'applyRegex');
     bind('#so-wi', 'worldInfoMode');
     bind('#so-sendtemp', 'sendTemperature');
@@ -4280,9 +4306,9 @@ function bindControls() {
         save();
         if (sysPromptEditMode !== 'chat') applySysPromptModeUiState(); // 实时刷新「内置 / 已自定义」提示
     });
-    win.querySelector('#so-sysprompt-reset').addEventListener('click', () => {
+    win.querySelector('#so-sysprompt-reset').addEventListener('click', async () => {
         const def = sysPromptModeDef(sysPromptEditMode);
-        if (!confirm(`确定把「${def.label}」的系统提示词重置为内置默认吗？当前的修改会丢失。`)) return;
+        if (!(await uiConfirm(`确定把「${def.label}」的系统提示词重置为内置默认吗？当前的修改会丢失。`))) return;
         const s2 = getSettings();
         if (def.id === 'chat') s2.systemPrompt = DEFAULT_SYSTEM_PROMPT;  // 恢复随扩展附带的默认
         else s2[def.key] = '';                                          // 清空覆盖 → 退回内置
@@ -4327,6 +4353,7 @@ function loadSettingsIntoForm() {
     win.querySelector('#so-adv-depth').value = s.advisorDepth;
     win.querySelector('#so-card').checked = !!s.includeCard;
     win.querySelector('#so-stat').checked = !!s.chatIncludeStat;
+    win.querySelector('#so-world').checked = !!s.chatIncludeWorld;
     win.querySelector('#so-chatbar-toggle').checked = !!s.showChatBarButton;
     win.querySelector('#so-regex').checked = !!s.applyRegex;
     win.querySelector('#so-wi').value = s.worldInfoMode;
@@ -5448,8 +5475,8 @@ function activeConstructLabel() {
 }
 
 // 退出整条弧线需一次确认（与游玩按钮空间分离的硬操作）。
-function confirmArcExit() {
-    if (confirm('确定退出？当前弧线和引导将被完全清除，主聊天恢复原状。')) arcExit();
+async function confirmArcExit() {
+    if (await uiConfirm('确定退出？当前弧线和引导将被完全清除，主聊天恢复原状。')) arcExit();
 }
 
 // 读手动弧线表单 → 采用一条弧线（透明 或 盲盒；layer-2 / 4b「手动放置拍子」入口）。
@@ -6257,6 +6284,7 @@ function buildSystemPrompt() {
     }
 
     parts.push(buildChatStatSection());
+    parts.push(buildChatWorldSection());
 
     // 用户功能请求：运行概要插在最近对话记录的正前方。
     const summarySection = buildSummarySection(getSummary());
@@ -6281,6 +6309,68 @@ function buildChatStatSection() {
             '\n（用户问数值时以上方为准；剧情文字 / 状态栏里出现的任何数值都可能是旧的，一律不要采信。）';
     }
     return '（注意：你看不到实时变量数值（好感度、金钱等状态数据）。用户问具体数值时，如实说明无法查看精确数值，建议用诊断或剧情参谋模式查询；可以根据剧情做定性判断（关系变暖 / 资源吃紧），但绝不要编造具体数字。）';
+}
+
+// ===== 外部扩展世界信息桥接（用户功能请求）=========================================
+// 让神谕读到「住在别的扩展自己系统里」的世界信息——主聊天与 MVU 之外、神谕原本看不到的后台世界。
+// 两路来源：
+//   (1) 内置「世界引擎」适配器：直接读 window.WORLD_ENGINE_CORE（官方原版与 Edwin 的 World-mod 同名全局）。
+//       仅当该聊天确有落盘状态（hasState）时才喂——loadState() 在无状态时只返回空的默认世界，喂它没意义。
+//       按用户选择喂【完整 state JSON】（含全部字段，包括 blackbox 私密层）。
+//   (2) 通用注册表 window.__ST_CONTEXT_PROVIDERS__：任何扩展可 push({ name, getContext })，getContext()
+//       返回字符串或对象。将来别的扩展无需改神谕即可接入——三行注册即可。
+// 全程 try/catch + 全局存在性判断：相关扩展没装 / 没加载时安静返回空、零副作用（仿 getMvuStatData 的写法）。
+function getExternalWorldBlocks() {
+    const blocks = [];
+
+    // (1) 世界引擎 / World-mod
+    try {
+        const we = window.WORLD_ENGINE_CORE;
+        if (we && typeof we.loadState === 'function' &&
+            (typeof we.hasState !== 'function' || we.hasState())) {
+            const state = we.loadState();
+            if (state && typeof state === 'object') {
+                blocks.push({ name: '世界引擎（World Engine）', text: JSON.stringify(state, null, 2) });
+            }
+        }
+    } catch (e) { console.warn('[Story Oracle] 读取世界引擎状态失败:', e); }
+
+    // (2) 通用上下文提供者注册表（任何扩展可自行注册）
+    try {
+        const providers = window.__ST_CONTEXT_PROVIDERS__;
+        if (Array.isArray(providers)) {
+            for (const p of providers) {
+                if (!p || typeof p.getContext !== 'function') continue;
+                try {
+                    const out = p.getContext();
+                    const text = (out == null) ? ''
+                        : (typeof out === 'string' ? out : JSON.stringify(out, null, 2));
+                    if (text && text.trim()) {
+                        blocks.push({ name: String(p.name || '外部扩展'), text: text });
+                    }
+                } catch (e) { console.warn('[Story Oracle] 外部上下文提供者出错:', p && p.name, e); }
+            }
+        }
+    } catch (e) { console.warn('[Story Oracle] 读取上下文提供者注册表失败:', e); }
+
+    return blocks; // [{ name, text }, ...]
+}
+
+// 把各来源拼成一段文本（每段带「来源」小标题），无任何来源时返回 ''。在 generateReply 里算好、存进
+// chatWorldData；buildChatWorldSection 负责加外层大标题。拆两步与 stat_data 那套写法保持一致。
+function assembleExternalWorld() {
+    const blocks = getExternalWorldBlocks();
+    if (!blocks.length) return '';
+    return blocks.map((b) => `--- 来源：${b.name} ---\n${b.text}`).join('\n\n');
+}
+
+// 外部世界信息区块。无数据时返回 ''（被 parts.filter(Boolean) / pushMsg 跳过）——与参谋的 stat_data
+// 一样属「可选情报，没有就整段省略」，不像普通模式 stat 那样留拒答占位。
+function buildChatWorldSection() {
+    if (!chatWorldData) return '';
+    return '=== 其它扩展维护的世界信息（由扩展系统提供，是主聊天之外、神谕本来看不到的后台世界状态——'
+        + '可据此回答与剧情世界相关的问题；其中的数值若与上方 MVU stat_data 冲突，以 stat_data 为准）===\n'
+        + chatWorldData;
 }
 
 // 用户功能请求：用户粘贴的运行概要 / 前情提要（本聊天）。在【普通聊天】与【剧情参谋】模式下
@@ -6458,6 +6548,9 @@ function buildAdvisorPrompt(ctx, s) {
     if (advStatData) {
         parts.push('=== 当前变量状态（stat_data，来自 MVU —— 剧情推进到此刻的实时数值）===\n' + advStatData);
     }
+
+    // 外部扩展世界信息（世界引擎等）——参谋规划须知道后台正在酝酿的事件 / 势力动向（用户功能请求）。
+    parts.push(buildChatWorldSection());
 
     if (worldInfoBlock) {
         parts.push('=== 世界书 / 设定 ===\n' + worldInfoBlock);
@@ -6672,6 +6765,7 @@ function expandMarker(out, identifier, ctx, s) {
             // Authoritative variable state (or the honest-refusal caveat) rides
             // just ahead of the story context — same discipline as plain mode.
             pushMsg(out, 'system', buildChatStatSection());
+            pushMsg(out, 'system', buildChatWorldSection());
             // 用户功能请求：运行概要紧贴故事记录之前（仅普通模式经此 marker；参谋 / 世界书
             // 预设各走自己的 placeAdv / placeLore，不经这里）。
             pushMsg(out, 'system', buildSummarySection(getSummary()));
@@ -6879,6 +6973,13 @@ async function generateReply() {
     if (!diagnoseMode && !lorebookMode && !advisorMode && s.chatIncludeStat) {
         const st = await getMvuStatData();
         chatStatData = st ? JSON.stringify(st, null, 2) : '';
+    }
+
+    // 外部扩展世界信息（世界引擎等）——普通聊天与剧情参谋两种模式都附带（用户功能请求）；
+    // 诊断 / 世界书模式不需要。无相关扩展时 assembleExternalWorld() 返回 ''，整段省略。
+    chatWorldData = '';
+    if (!diagnoseMode && !lorebookMode && s.chatIncludeWorld) {
+        chatWorldData = assembleExternalWorld();
     }
 
     const messages = buildMessages();
@@ -7758,10 +7859,10 @@ function renderEmptyState() {
     messagesEl.appendChild(wrap);
 }
 
-function clearConversation() {
+async function clearConversation() {
     // 清空会连带删除本聊天已保存的侧聊历史（含自动诊断记录），无法撤销——与本扩展其它破坏性
     // 操作（清空概要 / 重置提示词 / 退出弧线）保持一致，先确认再执行。空对话则无需打扰直接返回。
-    if (convo.length && !confirm('确定清空本聊天的侧聊历史吗？此操作会删除已保存的记录，无法撤销。')) return;
+    if (convo.length && !(await uiConfirm('确定清空本聊天的侧聊历史吗？此操作会删除已保存的记录，无法撤销。'))) return;
     convo = [];
     persistConvo();   // 用户功能请求：手动清空也清掉本聊天保存的历史（删元数据键）
     messagesEl.innerHTML = '';
