@@ -2407,6 +2407,7 @@ why: 为什么贴合此刻（呼应了哪条伏笔 / 关系 / 既定事实）
 
 let arcCompiling = false;        // 编译在途守卫（禁重复点击 / 重入）
 let arcRetryPending = null;      // 上次失败的过渡（供方案条「重试」按钮）
+let arcCompileError = '';        // 上次编译失败的【人话原因】（供失败提示 / 可复制系统记录；成功时清空）
 
 // 盲盒难度 = 赌注货币（弧线级、固定；见 consent）。三档同样有趣，区别在赌注层级与可逆性。
 // label/caption 供 UI（徽章 + 表单选项）；amp 是 layer-5 振幅缩放指令，注入盲盒编译调用，让难度
@@ -2753,11 +2754,32 @@ function beatViolatesRedlines(beat, redlines) {
     return null;
 }
 
+// 把一次过渡调用的失败归类成【人话原因】——给用户（尤其要把问题转贴给作者的远程用户）一个具体、可操作的
+// 原因，替掉黑箱「失败 / 超时 / 已取消」。e = 抛出的错误（HTTP / 网络 / CORS / 中止）；text = 调用返回的原文
+//（判空 / 判解析失败）。纯函数（只读 e.name + 文本）→ 可单测。
+function arcFailureReason(e, text) {
+    if (e) {
+        if (arcAborted(e)) return '调用被中止（到了 180s 超时，或你点了「取消」）。长 RP + 思考型模型一拍可能很慢；可关掉「流式」、调高超时容忍，或换更快的模型 / 连接。';
+        const m = String((e && e.message) || e || '').trim();
+        if (/Failed to fetch|NetworkError|ERR_NETWORK|ERR_CONNECTION|CORS|Access-Control/i.test(m)) {
+            return 'direct（直连）模式下浏览器把请求拦了（跨域 CORS 或连不上端点）：' + m.slice(0, 160) +
+                '。多数官方端点（含 DeepSeek）不给浏览器返回 CORS 头 → 直连必失败。解决：把「连接方式」改成 ST 的「连接配置档（profile）」走后端中转。';
+        }
+        return '调用报错：' + m.slice(0, 240);
+    }
+    if (!text || !text.trim()) {
+        return '收到【空回复】（端点返回成功但没有正文）。常见三因：①中转 / 代理无视了「流式」、②思考型模型（Gemini / 反重力等）把额度全用在思考上、正文为空、③额度或风控拦截。可在设置里【关掉「流式」】或【调高「最大生成」】再试。';
+    }
+    return '收到回复，但【解析不出 <ArcBeat>】（模型没按要求的格式输出）。原文开头：' + text.replace(/\s+/g, ' ').trim().slice(0, 200) + '…';
+}
+
 // 编译 + 解析，最多重试 3 次；全部失败返回 null。盲盒还过一道红线代码侧守卫——命中即弃这次重编，
 // 三次皆中则返回 null（＝该过渡 fail-safe：保留当前注入 + 方案条「重试」）。
+// 末次失败的【人话原因】写进 arcCompileError，供 runCompileTransition 展示（而不是黑箱「失败 / 超时 / 已取消」）。
 async function compileBeatWithRetry(arc, waypoint, opts) {
     const redlines = (arc.mode === 'blind' && arc.consent && Array.isArray(arc.consent.redlines))
         ? arc.consent.redlines : [];
+    let lastReason = '';
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
             const text = await callCompiler(arc, waypoint, opts);
@@ -2765,15 +2787,19 @@ async function compileBeatWithRetry(arc, waypoint, opts) {
             if (parsed && parsed.goal) {
                 const beat = buildCompiledBeat(arc, waypoint, parsed, opts);
                 const hit = redlines.length ? beatViolatesRedlines(beat, redlines) : null;
-                if (hit) { console.warn('[Story Oracle] arc compile attempt', attempt, '— redline violated:', hit); continue; }
+                if (hit) { lastReason = '生成的拍命中了你设的红线「' + hit + '」，已弃用重编。'; console.warn('[Story Oracle] arc compile attempt', attempt, '— redline violated:', hit); continue; }
+                arcCompileError = '';   // 成功，清掉旧的失败原因
                 return beat;
             }
-            console.warn('[Story Oracle] arc compile attempt', attempt, '— no parseable <ArcBeat>.');
+            lastReason = arcFailureReason(null, text);
+            console.warn('[Story Oracle] arc compile attempt', attempt, '—', lastReason);
         } catch (e) {
+            lastReason = arcFailureReason(e);
             if (arcAborted(e)) { console.warn('[Story Oracle] arc compile aborted (timeout / cancel) — stop retrying.'); break; }
             console.warn('[Story Oracle] arc compile attempt', attempt, 'failed:', e);
         }
     }
+    arcCompileError = lastReason;   // 供 runCompileTransition 展示 / 落系统记录
     return null;
 }
 
@@ -3272,7 +3298,11 @@ async function runCompileTransition(o) {
         setArcBusyUI(false);
         setArcRetry(o);                 // 暂存供方案条「重试」
         renderPlanBar();
-        arcToastErr('编译没成功（失败 / 超时 / 已取消）——当前这一拍与引导保持不变。可点方案条上的「重试」再试。');
+        const why = arcCompileError || '失败 / 超时 / 已取消';
+        // toast 会自动消失，只给一句简短提示；具体原因 + 操作建议落进【可选中复制、不随 toast 消失】的系统记录，
+        // 方便远程用户把它转贴给作者定位（不再是黑箱「失败 / 超时 / 已取消」）。
+        arcToastErr('编译没成功：' + (why.length > 60 ? why.slice(0, 60) + '…（详情见侧栏记录）' : why));
+        addSystemNote('⚠ 弧线编译失败：' + why + '\n（当前这一拍与引导保持不变，可点方案条上的「重试」再试。把这条原因转给作者可帮助定位问题。）');
         return;
     }
     setArc(o.onBeat(cur, beat));
@@ -7241,6 +7271,19 @@ async function callDirect(url, apiKey, body, signal) {
     return data?.choices?.[0]?.message?.content ?? '';
 }
 
+// 有些中转 / 代理会【无视 stream:true】，直接回一个普通 JSON 补全（不是 SSE 事件流）。逐行找 data: 会一无所获、
+// 返回空串 → 上层「无可解析 ArcBeat」→「编译没成功」。这个纯函数把那种普通 JSON 正文里的 content 取出来作回退；
+// 既不是 SSE、也不是合法补全 JSON 时返回 ''（交给上层报「空回复」）。纯函数 → 可单测。
+function extractNonStreamContent(raw) {
+    if (!raw || !raw.trim()) return '';
+    try {
+        const data = JSON.parse(raw);
+        return (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+    } catch (e) {
+        return '';
+    }
+}
+
 async function streamDirect(url, apiKey, body, signal, onDelta) {
     const res = await fetch(url, {
         method: 'POST',
@@ -7256,15 +7299,19 @@ async function streamDirect(url, apiKey, body, signal, onDelta) {
     const dec = new TextDecoder();
     let buf = '';
     let full = '';
+    let raw = '', sawData = false;   // raw=原始正文（供非 SSE 回退）；sawData=是否出现过 SSE 行
     while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buf += dec.decode(value, { stream: true });
+        const chunk = dec.decode(value, { stream: true });
+        raw += chunk;
+        buf += chunk;
         const lines = buf.split('\n');
         buf = lines.pop(); // keep the (possibly partial) last line
         for (let line of lines) {
             line = line.trim();
             if (!line.startsWith('data:')) continue;
+            sawData = true;
             const payload = line.slice(5).trim();
             if (payload === '[DONE]') return full;
             try {
@@ -7273,6 +7320,11 @@ async function streamDirect(url, apiKey, body, signal, onDelta) {
                 if (delta) { full += delta; onDelta(delta); }
             } catch (e) { /* keepalive / non-JSON line */ }
         }
+    }
+    // 回退：整段流里从未出现 SSE 的 data: 行（端点无视了 stream:true、回了普通 JSON）→ 按普通补全解析，别返回空串。
+    if (!sawData && !full) {
+        const content = extractNonStreamContent(raw);
+        if (content) { onDelta(content); return content; }
     }
     return full;
 }
@@ -7288,16 +7340,19 @@ async function streamDirectArc(url, apiKey, body, signal, onLive) {
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    let buf = '', full = '', reasoning = '';
+    let buf = '', full = '', reasoning = '', raw = '', sawData = false;   // raw=原始正文（供非 SSE 回退）；sawData=是否出现过 SSE 行
     while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buf += dec.decode(value, { stream: true });
+        const chunk = dec.decode(value, { stream: true });
+        raw += chunk;
+        buf += chunk;
         const lines = buf.split('\n');
         buf = lines.pop();
         for (let line of lines) {
             line = line.trim();
             if (!line.startsWith('data:')) continue;
+            sawData = true;
             const payload = line.slice(5).trim();
             if (payload === '[DONE]') { if (onLive) onLive({ content: full, reasoning }); return full; }
             try {
@@ -7308,6 +7363,12 @@ async function streamDirectArc(url, apiKey, body, signal, onLive) {
                 if ((typeof d.content === 'string' && d.content) || r) { if (onLive) onLive({ content: full, reasoning }); }
             } catch (e) { /* keepalive / 非 JSON 行 */ }
         }
+    }
+    // 回退：整段流里从未出现 SSE 的 data: 行（中转无视了 stream:true、回了普通 JSON 补全）→ 按普通补全解析其 content，
+    // 别再返回空串（空串 → parseArcBeat 解不出 → 黑箱「编译没成功」）。这正是「反重力 / 部分中转」会触发的情形。
+    if (!sawData && !full) {
+        const content = extractNonStreamContent(raw);
+        if (content) { if (onLive) onLive({ content, reasoning: '' }); return content; }
     }
     if (onLive) onLive({ content: full, reasoning });
     return full;
