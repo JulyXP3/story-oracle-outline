@@ -54,6 +54,7 @@
         'patches/advisor-collapse.js',
         'patches/tools-expand.js',
         'patches/settings-panel.js',
+        'patches/dev-options.js',
         'patches/outline-mode.js',
         'patches/outline-templates.js',
         'patches/outline-inject.js',
@@ -100,6 +101,10 @@
 
             if (patch.improveSettingsPanel) {
                 patch.improveSettingsPanel();
+            }
+
+            if (patch.addDevOptions) {
+                patch.addDevOptions();
             }
 
             if (patch.createOutlineModeUI) {

@@ -132,6 +132,20 @@
                             const outlinePrompt = getOutlineSystemPrompt();
                             systemMsg.content = outlinePrompt;
                             options.body = JSON.stringify(body);
+
+                            // 如果开启了开发者选项，输出完整请求内容
+                            const showPrompt = window.StoryOraclePatch?.isShowPromptEnabled?.();
+                            if (showPrompt) {
+                                console.log('='.repeat(80));
+                                console.log('[Story Oracle Patch] 完整请求内容:');
+                                console.log('='.repeat(80));
+                                body.messages.forEach((msg, idx) => {
+                                    console.log(`\n[消息 ${idx + 1}] 角色: ${msg.role}`);
+                                    console.log('-'.repeat(40));
+                                    console.log(msg.content);
+                                });
+                                console.log('\n' + '='.repeat(80));
+                            }
                         }
                     }
                 } catch (e) {
