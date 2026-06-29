@@ -20,11 +20,27 @@
         }
     }
 
-    // 提取 <plot_outline> 内容
-    function extractPlotOutline(text) {
-        if (!text) return null;
-        const match = text.match(/<plot_outline[^>]*>([\s\S]*?)<\/plot_outline>/i);
+    // 从模板中提取第一个闭合标签的标签名
+    function extractTagNameFromTemplate(template) {
+        if (!template) return null;
+        const match = template.match(/<([a-z_][a-z0-9_-]*)[^>]*>[\s\S]*?<\/\1>/i);
+        return match ? match[1] : null;
+    }
+
+    // 从文本尾部提取指定标签的内容（包含标签本身）
+    function extractTagContentFromEnd(text, tagName) {
+        if (!text || !tagName) return null;
+        const pattern = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>(?![\\s\\S]*<\\/${tagName}>)`, 'i');
+        const match = text.match(pattern);
         return match ? match[0].trim() : null;
+    }
+
+    // 获取当前选中的模板
+    function getCurrentTemplate() {
+        const select = document.getElementById('so-outline-template-select');
+        if (!select) return null;
+        const templateId = select.value;
+        return window.StoryOraclePatch?.getTemplate?.(templateId);
     }
 
     // 获取API（参考询问机二改的实现）
@@ -149,6 +165,28 @@
             showToast('内容为空', 'warning');
             return false;
         }
+
+        // 获取当前模板并提取标签名
+        const template = getCurrentTemplate();
+        if (!template) {
+            showToast('未找到大纲模板', 'warning');
+            return false;
+        }
+
+        const tagName = extractTagNameFromTemplate(template.content);
+        if (!tagName) {
+            showToast('模板格式错误：未找到闭合标签', 'warning');
+            return false;
+        }
+
+        // 从尾部提取标签内容
+        const extractedContent = extractTagContentFromEnd(content, tagName);
+        if (!extractedContent) {
+            showToast(`未找到 <${tagName}> 标签内容`, 'warning');
+            return false;
+        }
+
+        content = extractedContent;
 
         const charName = getCurrentCharacterName();
         if (!charName) {
