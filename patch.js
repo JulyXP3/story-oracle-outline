@@ -61,6 +61,7 @@
         'patches/outline-request.js',
         'patches/message-actions.js',
         'patches/actions-bottom.js',
+        'patches/smart-scroll.js',
     ];
 
     // 加载脚本
