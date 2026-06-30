@@ -51,7 +51,7 @@
     // 创建开发者选项复选框
     const devOption = document.createElement("label");
     devOption.className = "so-check";
-    devOption.innerHTML = `<input type="checkbox" id="so-dev-show-prompt"><span>控制台显示完整请求内容（开发者专用）</span>`;
+    devOption.innerHTML = `<input type="checkbox" id="so-dev-show-prompt"><span>控制台显示请求拦截提示词（开发者专用）</span>`;
 
     collapseBody.appendChild(devOption);
 

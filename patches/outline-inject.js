@@ -43,6 +43,72 @@
         return window.StoryOraclePatch?.getTemplate?.(templateId);
     }
 
+    // 检查文本是否有完整闭合的指定标签
+    function hasCompleteTag(text, tagName) {
+        const pattern = new RegExp(`<${tagName}[^>]*>[\\s\\S]*?<\\/${tagName}>`, 'i');
+        return pattern.test(text);
+    }
+
+    // 移除文本头尾的所有标签（包括闭合和未闭合的）
+    function stripHeadTailTags(text) {
+        let result = text.trim();
+        let changed = true;
+
+        // 循环移除头尾标签，直到没有变化
+        while (changed) {
+            const before = result;
+
+            // 移除开头的标签（完整或不完整）
+            // 匹配: <tag>, <tag, </tag>, </tag
+            result = result.replace(/^<\/?[^>]*>?/i, '').trim();
+
+            // 移除结尾的标签（完整或不完整）
+            // 匹配: </tag>, </tag, <tag>, <tag
+            result = result.replace(/<\/?[^>]*>?$/i, '').trim();
+
+            changed = (before !== result);
+        }
+
+        return result;
+    }
+
+    // 为AI回复补充标签
+    function supplementTags(text) {
+        const template = getCurrentTemplate();
+        if (!template) {
+            showToast('未找到大纲模板', 'warning');
+            return null;
+        }
+
+        const tagName = extractTagNameFromTemplate(template.content);
+        if (!tagName) {
+            showToast('模板格式错误：未找到闭合标签', 'warning');
+            return null;
+        }
+
+        // 情况3：标签完整且名称匹配，跳过
+        if (hasCompleteTag(text, tagName)) {
+            showToast(`标签已完整，无需补充`, 'success');
+            return text;
+        }
+
+        // 检查是否有任何标签（闭合或未闭合）
+        const hasAnyTag = /<[^>]+>/.test(text) || /<\/[^>]+>/.test(text);
+
+        let content;
+        if (!hasAnyTag) {
+            // 情况1：没有任何标签，直接补充
+            content = text.trim();
+        } else {
+            // 情况2：有标签但不完整，剔除所有头尾标签
+            content = stripHeadTailTags(text);
+        }
+
+        const result = `<${tagName}>\n${content}\n</${tagName}>`;
+        showToast(`已补充 <${tagName}> 标签`, 'success');
+        return result;
+    }
+
     // 获取API（参考询问机二改的实现）
     function getPlotAPI() {
         const pwin = window.parent || window;
@@ -451,4 +517,5 @@
 
     window.StoryOraclePatch = window.StoryOraclePatch || {};
     window.StoryOraclePatch.injectOutlineToWorldInfo = injectOutlineToWorldInfo;
+    window.StoryOraclePatch.supplementTags = supplementTags;
 })();

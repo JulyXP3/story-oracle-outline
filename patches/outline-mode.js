@@ -33,8 +33,89 @@
     // 绑定点击事件
     outlineBtn.addEventListener("click", toggleOutlineMode);
 
+    // 绑定标签补充按钮事件
+    bindTagFixButton();
+
     console.log("[Story Oracle Patch] 大纲模式按钮已创建");
     return true;
+  }
+
+  function bindTagFixButton() {
+    setTimeout(() => {
+      const fixBtn = document.getElementById("so-outline-fix-tags");
+      if (fixBtn && !fixBtn.dataset.bound) {
+        fixBtn.addEventListener("click", handleTagFix);
+        fixBtn.dataset.bound = "true";
+      }
+    }, 100);
+  }
+
+  function handleTagFix() {
+    // 获取最新的AI消息
+    const win = document.getElementById("so-window");
+    if (!win) return;
+
+    const messages = Array.from(win.querySelectorAll(".so-msg.so-assistant"));
+    if (messages.length === 0) {
+      showToast("没有找到AI消息", "warning");
+      return;
+    }
+
+    const latestMsg = messages[messages.length - 1];
+    const contentEl = latestMsg.querySelector(".so-content");
+    if (!contentEl) return;
+
+    const originalText = contentEl.textContent;
+    if (!originalText.trim()) {
+      showToast("消息内容为空", "warning");
+      return;
+    }
+
+    // 调用标签补充函数
+    if (typeof window.StoryOraclePatch?.supplementTags === "function") {
+      const fixedText = window.StoryOraclePatch.supplementTags(originalText);
+      if (fixedText && fixedText !== originalText) {
+        contentEl.textContent = fixedText;
+      }
+    } else {
+      showToast("标签补充功能不可用", "error");
+    }
+  }
+
+  function showToast(message, type = "success") {
+    if (window.toastr) {
+      window.toastr[type](message);
+      return;
+    }
+
+    const colors = {
+      success: "rgba(74, 222, 128, 0.9)",
+      warning: "rgba(251, 191, 36, 0.9)",
+      error: "rgba(239, 68, 68, 0.9)",
+    };
+
+    const toast = document.createElement("div");
+    toast.textContent = message;
+    toast.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            background: ${colors[type]};
+            color: ${type === "warning" ? "#000" : "#fff"};
+            border-radius: 8px;
+            z-index: 10001;
+            font-size: 14px;
+            max-width: 300px;
+            white-space: pre-line;
+        `;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.transition = "opacity 0.3s";
+      toast.style.opacity = "0";
+      setTimeout(() => toast.remove(), 300);
+    }, 3000);
   }
 
   function createOutlinePanel() {
@@ -62,10 +143,15 @@
                         <button type="button" class="so-btn-secondary" id="so-outline-template-manage">
                             <i class="fa-solid fa-pen-to-square"></i> 管理模板
                         </button>
-                        <label class="so-checkbox-field">
-                            <input type="checkbox" id="so-outline-use-preset">
-                            <span>套用我的补全预设</span>
-                        </label>
+                        <div style="display: flex; gap: 8px;">
+                            <label class="so-checkbox-field" style="flex: 1;">
+                                <input type="checkbox" id="so-outline-use-preset">
+                                <span>套用我的补全预设</span>
+                            </label>
+                            <button type="button" class="so-btn-secondary" id="so-outline-fix-tags" title="为AI回复补充或修正标签">
+                                <i class="fa-solid fa-tags"></i> 标签补充
+                            </button>
+                        </div>
                     </div>
                 </div>
             </details>
@@ -214,6 +300,19 @@
 
             .so-checkbox-field:hover span {
                 opacity: 1;
+            }
+
+            /* 标签补充按钮样式（紧凑型，与复选框高度一致） */
+            #so-outline-fix-tags {
+                padding: 6px 10px;
+                font-size: 0.85em;
+                white-space: nowrap;
+                height: fit-content;
+                align-self: center;
+            }
+
+            #so-outline-fix-tags i {
+                margin-right: 4px;
             }
 
             /* 模板管理器对话框样式 */
