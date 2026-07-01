@@ -153,16 +153,15 @@
       contentEl.dataset.originalContent = newText;
 
       // 重置 markdown 处理标记，以便重新渲染
-      contentEl.dataset.markdownProcessed = "false";
+      delete contentEl.dataset.soMdDone;
+      contentEl.classList.remove("so-rendered");
 
-      // 更新显示内容（如果有 markdown 渲染，会被自动重新渲染）
+      // 更新显示内容（设置纯文本，然后触发 markdown 渲染）
       contentEl.textContent = newText;
 
-      // 如果有 markdown 渲染功能，触发重新渲染
-      if (window.StoryOraclePatch?.renderMarkdown && contentEl.classList.contains("markdown-content")) {
-        const html = window.StoryOraclePatch.renderMarkdown(newText);
-        contentEl.innerHTML = html;
-        contentEl.dataset.markdownProcessed = "true";
+      // 通过统一的 processMessage 触发重新渲染（含 showdown + DOMPurify）
+      if (typeof window.StoryOraclePatch?.processMessage === "function") {
+        window.StoryOraclePatch.processMessage(contentEl);
       }
 
       contentEl.style.display = "";

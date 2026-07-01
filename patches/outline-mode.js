@@ -66,7 +66,8 @@
     if (!contentEl) return;
 
     // **优先读取原始内容（Markdown 渲染前保存的）**
-    const originalText = contentEl.dataset.originalContent || contentEl.textContent;
+    const originalText =
+      contentEl.dataset.originalContent || contentEl.textContent;
     if (!originalText.trim()) {
       showToast("消息内容为空", "warning");
       return;
@@ -80,16 +81,15 @@
         contentEl.dataset.originalContent = fixedText;
 
         // 重置 markdown 处理标记
-        contentEl.dataset.markdownProcessed = "false";
+        delete contentEl.dataset.soMdDone;
+        contentEl.classList.remove("so-rendered");
 
-        // 更新显示内容
+        // 更新显示内容（设置纯文本，然后触发 markdown 渲染）
         contentEl.textContent = fixedText;
 
-        // 如果启用了 markdown 渲染，触发重新渲染
-        if (window.StoryOraclePatch?.renderMarkdown && contentEl.classList.contains("markdown-content")) {
-          const html = window.StoryOraclePatch.renderMarkdown(fixedText);
-          contentEl.innerHTML = html;
-          contentEl.dataset.markdownProcessed = "true";
+        // 通过统一的 processMessage 触发重新渲染（含 showdown + DOMPurify）
+        if (typeof window.StoryOraclePatch?.processMessage === "function") {
+          window.StoryOraclePatch.processMessage(contentEl);
         }
       }
     } else {
@@ -160,7 +160,7 @@
 
     repositionToasts() {
       // 过滤掉已经从 DOM 中移除的 toast
-      this.activeToasts = this.activeToasts.filter(toast => {
+      this.activeToasts = this.activeToasts.filter((toast) => {
         return toast && toast.parentNode;
       });
 
@@ -170,7 +170,7 @@
           toast.style.bottom = `${20 + index * 60}px`;
         }
       });
-    }
+    },
   };
 
   function showToast(message, type = "success") {
@@ -208,7 +208,7 @@
                                 <span>套用我的补全预设</span>
                             </label>
                             <button type="button" class="so-btn-secondary" id="so-outline-fix-tags" title="为AI回复补充或修正标签">
-                                <i class="fa-solid fa-tags"></i> 标签补充
+                                <i class="fa-solid fa-tags"></i> 标签补充(仅限最新一楼)
                             </button>
                         </div>
                     </div>

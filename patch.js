@@ -66,7 +66,6 @@
     "patches/outline-request.js",
     "patches/message-actions.js",
     "patches/actions-bottom.js",
-    "patches/smart-scroll.js",
     "patches/markdown-render.js",
   ];
 
