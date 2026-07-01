@@ -182,7 +182,11 @@
       if (!data) return {};
       const parsed = JSON.parse(data);
       // 确保是纯对象 { name: { endpoint, apikey, model } }，而不是数组或其他类型
-      if (Array.isArray(parsed) || typeof parsed !== "object" || parsed === null) {
+      if (
+        Array.isArray(parsed) ||
+        typeof parsed !== "object" ||
+        parsed === null
+      ) {
         // 旧数据格式不正确，重置为空对象
         console.warn(
           "[Story Oracle Patch] 预设数据格式异常（应为对象），已重置。旧数据:",
@@ -201,7 +205,11 @@
   function savePresetsToStorage(presets) {
     try {
       // 防御：只保存纯对象（非数组）
-      if (Array.isArray(presets) || typeof presets !== "object" || presets === null) {
+      if (
+        Array.isArray(presets) ||
+        typeof presets !== "object" ||
+        presets === null
+      ) {
         console.warn("[Story Oracle Patch] 拒绝保存非对象格式的预设数据");
         return;
       }
