@@ -55,6 +55,7 @@
         'patches/tools-expand.js',
         'patches/settings-panel.js',
         'patches/dev-options.js',
+        'patches/tools-expand-toggle.js',
         'patches/outline-mode.js',
         'patches/outline-templates.js',
         'patches/outline-inject.js',
@@ -97,16 +98,21 @@
                 patch.applyAdvBarPatch();
             }
 
-            if (patch.moveToolsToHeader) {
-                patch.moveToolsToHeader();
-            }
-
             if (patch.improveSettingsPanel) {
                 patch.improveSettingsPanel();
             }
 
             if (patch.addDevOptions) {
                 patch.addDevOptions();
+            }
+
+            if (patch.addToolsExpandToggle) {
+                patch.addToolsExpandToggle();
+            }
+
+            // 根据设置决定是否展开工具按钮
+            if (patch.isToolsExpandEnabled && patch.isToolsExpandEnabled() && patch.moveToolsToHeader) {
+                patch.moveToolsToHeader();
             }
 
             if (patch.createOutlineModeUI) {
