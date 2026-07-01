@@ -3883,6 +3883,19 @@ function parseExcludeTagNames(str) {
         .filter(Boolean);
 }
 
+// 纯函数（fix-exclude-nested-bracket.test.mjs）：把「排除区」输入解析成 [{name, bracket}]。每行 / 逗号一项。
+// <tag> / </tag> / 裸名 tag → 尖括号块（bracket:false）；[tag] / [/tag] → 方括号块（bracket:true，如图生指令 [IMG_GEN]…[/IMG_GEN]）。
+// 名字按标签名字符集（含中文、下划线、连字符）提取，容错前缀 < / </ / [ / [/。空 / 杂项 → 丢弃。
+function parseExcludeTags(str) {
+    return String(str || '').split(/[,\n]+/).map((s) => {
+        const t = s.trim();
+        if (!t) return null;
+        const bracket = t.charAt(0) === '[';
+        const m = t.replace(/^[<[]\/?/, '').match(/^[A-Za-z0-9_一-龥-]+/);
+        return m ? { name: m[0], bracket } : null;
+    }).filter(Boolean);
+}
+
 // 排除·保留区占位标记：keep 块从 prose 里抠走时，原位留下 ⟦SO_KEEP_n⟧ 作锚点（n = 该块在 keepBlocks 里的下标），
 // 让 composeFixedReply 能把原块还原【回原位】，而不是一律接到末尾（用户报的「保留块被挪到故事结尾」bug）。⟦⟧ 是罕见
 // 数学括号，正文几乎不可能自然出现；模型被 buildFixPrompt 提示原样保留，万一弄丢由 composeFixedReply 兜底接回（不丢内容）。
@@ -3890,27 +3903,48 @@ const FIX_KEEP_MARK = '⟦SO_KEEP_';
 function fixKeepPlaceholder(i) { return FIX_KEEP_MARK + i + '⟧'; }
 function stripFixKeepMarks(t) { return String(t == null ? '' : t).replace(new RegExp(FIX_KEEP_MARK + '\\d+⟧', 'g'), ''); }
 
-// 纯函数：从 reply 里抠出用户指定的"排除区"。keep 标签的 <tag>…</tag> 块（含截断未闭合）抠出后【原位留下占位标记 ⟦SO_KEEP_n⟧】
+// 纯函数：从 reply 里抠出用户指定的"排除区"。keep 标签的整块（含截断未闭合）抠出后【原位留下占位标记 ⟦SO_KEEP_n⟧】
 // 并把原块收进 keepBlocks（composeFixedReply 据标记还原回原位）；drop 标签的块抠出后直接丢弃（无标记）。两者都从 prose
-// （送去校正的正文）里移除。返回 { prose, keep, keepBlocks } —— prose 送去校正，keepBlocks 是要按位置接回的块数组。可单测。
+// （送去校正的正文）里移除。返回 { prose, keep, keepBlocks }。可单测（fix-exclude*.test.mjs）。
+// 【深度配平】（1.17.9）：按开 / 闭标签计数找【配平】的整块——嵌套同名标签（<div> 套 <div>）抠的是【最外层】整块，
+// 而非旧非贪婪正则「外开配第一个内闭」把结构切碎（用户报的「<div> 放进保留区也没用、整段被肘碎」根因）。
+// 【方括号块】（1.17.9）：[IMG_GEN]…[/IMG_GEN] 这类方括号分隔块同样支持（图生卡常用；parseExcludeTags 的 bracket）。
+// 孤立闭合标签（深度 0、无配对开标签）留在 prose；开了没闭（截断）→ 取到结尾。各标签按列表顺序逐一抠（与旧版同）。
 function extractExcludedSections(reply, keepStr, dropStr) {
     let prose = String(reply || '');
     const keepBlocks = [];
     const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const nb = '(?![A-Za-z0-9_\\u4e00-\\u9fa5-])';   // 标签名后不得再跟名字字符（避免 <plan> 误匹配 <planning>；兼容中文标签）
-    const pull = (name, collect) => {
-        const n = esc(name);
-        const repl = (m) => {
-            if (!collect) return '';                              // drop：直接抠掉，不留痕
-            const ph = fixKeepPlaceholder(keepBlocks.length);     // keep：原位留下带下标的占位标记
-            keepBlocks.push(m);
-            return ph;
-        };
-        prose = prose.replace(new RegExp('<' + n + nb + '[^>]*>[\\s\\S]*?<\\/' + n + nb + '[^>]*>', 'gi'), repl);
-        prose = prose.replace(new RegExp('<' + n + nb + '[^>]*>[\\s\\S]*$', 'i'), repl);
+    const nb = '(?![A-Za-z0-9_\\u4e00-\\u9fa5-])';   // 标签名后不得再跟名字字符（避免 <plan> 误匹配 <planning> / [IMG] 误匹配 [IMGX]；兼容中文标签）
+    const pull = (spec, collect) => {
+        const n = esc(spec.name);
+        // 按尖 / 方括号给出开、闭标记的正则源（方括号块允许 [name attrs] 形态，闭标记 [/name]）。
+        const openSrc = spec.bracket ? ('\\[' + n + nb + '[^\\]]*\\]') : ('<' + n + nb + '[^>]*>');
+        const closeSrc = spec.bracket ? ('\\[\\/' + n + nb + '[^\\]]*\\]') : ('<\\/' + n + nb + '[^>]*>');
+        const tokRe = new RegExp('(' + openSrc + ')|(' + closeSrc + ')', 'gi');
+        const spans = [];
+        let depth = 0, spanStart = -1, m;
+        while ((m = tokRe.exec(prose)) !== null) {
+            if (m[1] != null) {                                  // 开标签：深度 0→1 记起点，向上计数
+                if (depth === 0) spanStart = m.index;
+                depth += 1;
+            } else if (depth > 0) {                              // 闭标签：向下计数，回到 0 即一整块配平
+                depth -= 1;
+                if (depth === 0) spans.push([spanStart, m.index + m[0].length]);
+            }                                                    // 深度 0 的孤立闭合标签：忽略（留在 prose）
+        }
+        if (depth > 0 && spanStart >= 0) spans.push([spanStart, prose.length]);   // 截断：开了没闭 → 取到结尾
+        if (!spans.length) return;
+        let out = '', last = 0;
+        for (const [a, b] of spans) {                            // 文档顺序遍历 → keepBlocks 文档顺序、占位标记落原位
+            out += prose.slice(last, a);
+            if (collect) { out += fixKeepPlaceholder(keepBlocks.length); keepBlocks.push(prose.slice(a, b)); }
+            // drop：什么都不接（块被丢弃）
+            last = b;
+        }
+        prose = out + prose.slice(last);
     };
-    for (const name of parseExcludeTagNames(keepStr)) pull(name, true);
-    for (const name of parseExcludeTagNames(dropStr)) pull(name, false);
+    for (const spec of parseExcludeTags(keepStr)) pull(spec, true);
+    for (const spec of parseExcludeTags(dropStr)) pull(spec, false);
     prose = prose.replace(/\n{3,}/g, '\n\n').trim();
     return { prose, keep: keepBlocks.join('\n\n'), keepBlocks };
 }
@@ -4914,7 +4948,7 @@ function buildWindow() {
                         <label class="so-check so-lb-check"><input id="so-fix-tgt-precision" type="checkbox"><span>过度精确（数学论文腔）</span></label>
                         <label class="so-check so-lb-check"><input id="so-fix-tgt-magic" type="checkbox"><span>魔法被写成理科（仅奇幻设定）</span></label>
                         <label class="so-check so-lb-check"><input id="so-fix-tgt-pacing" type="checkbox"><span>描写拖沓 / 流水账</span></label>
-                        <div class="so-fix-targets-head">排除区（这些标签的整段不送去校正，省时间）。每行写一个【起始】标记即可，如 &lt;thinking&gt;——不用写结束的 &lt;/thinking&gt;。</div>
+                        <div class="so-fix-targets-head">排除区（这些标签的整段不送去校正，省时间）。每行写一个【起始】标记即可，如 &lt;thinking&gt;——不用写结束的 &lt;/thinking&gt;。<br>支持<strong>嵌套同名标签</strong>（如 &lt;div&gt; 套 &lt;div&gt; 会整块保留最外层）和<strong>方括号块</strong>（图生卡的 <code>[IMG_GEN]</code> 这类，直接写 <code>[IMG_GEN]</code>）。若整篇正文都包在一个标签里，优先用上面的「只校正此标签内的正文」，比在这里逐个枚举更省心。</div>
                         <textarea id="so-fix-keep" rows="2" placeholder="保留区标签（每行一个，如 <status>）：不改，原样留在回复里"></textarea>
                         <textarea id="so-fix-drop" rows="2" placeholder="丢弃区标签（每行一个，如 <thinking>）：不改，也不放回（思考块这类）"></textarea>
                         <textarea id="so-fix-know" rows="2" placeholder="角色知识边界（可空）：例如「主角不知道自己的真实身世」"></textarea>
@@ -5102,12 +5136,12 @@ function buildWindow() {
 
         <div id="so-fixwarn">
             <div id="so-fixwarn-card">
-                <div id="so-fixwarn-head"><i class="fa-solid fa-triangle-exclamation"></i> 自动校正：关于「标签块」的提醒</div>
+                <div id="so-fixwarn-head"><i class="fa-solid fa-circle-info"></i> 自动校正：只改你的故事正文</div>
                 <div id="so-fixwarn-body">
-                    <p>「自动校正」会把<strong>整条回复正文</strong>交给模型重写（去 AI 味 / 收紧）。卡片夹在正文里的<strong>成对标签块</strong>——像 &lt;sceneinfo&gt;…&lt;/sceneinfo&gt;、&lt;details&gt;…&lt;/details&gt; 这类——也会被当成普通正文一起送去，模型<strong>可能改写、挪到别处、甚至删掉</strong>它们（代码层面不保证留存或留在原位）。</p>
-                    <p>若你想让某个标签块<strong>原样保留、并留在原来的位置</strong>（不被删、不被挪走），把它加进下方<strong>「排除区 · 保留」</strong>那一栏：</p>
-                    <p class="so-autowarn-danger">每行写一个<strong>起始标记</strong>就行，例如&nbsp;&lt;sceneinfo&gt;<br>—— 只写开头的 &lt;sceneinfo&gt;，<strong>不用</strong>写结尾的 &lt;/sceneinfo&gt;（写了也没坏处，只是多余）。</p>
-                    <p class="so-autowarn-note">「保留区」里的整段不送去校正，会原样留在回复里、并放回它原来的位置。要直接删掉的（如思考块）则写进它下面的「丢弃区」。</p>
+                    <p><strong>自动校正</strong>会把你的<strong>故事正文</strong>交给模型重写一遍（去掉 AI 腔 / 套话、收紧读感），并作为<strong>新的一条 swipe</strong> 应用——原回复留在左滑，随时能滑回去，<strong>不破坏存档</strong>。</p>
+                    <p class="so-autowarn-danger">默认它<strong>只改 &lt;content&gt; 标签里的正文</strong>。你卡片正文<strong>之外</strong>的一切——状态栏、选项菜单、世界书、图片、变量面板——都会<strong>原样保留、原位不动</strong>，你不用做任何设置。</p>
+                    <p><strong>唯一要确认的一点：</strong>如果你的卡片不是用 &lt;content&gt; 包正文，而是别的标签（例如 &lt;gametxt&gt;），把下面「<strong>只校正此标签内的正文</strong>」那一栏改成你卡片用的标签名就行。（留空 = 校正整条回复。）</p>
+                    <p class="so-autowarn-note">进阶（多数卡用不到）：如果正文<strong>里面</strong>还夹着你想原样保住的小块（某个面板 / 折叠块 / 图片指令），把它的<strong>起始标记</strong>加进「排除区 · 保留」。正文<strong>外</strong>的东西不用管。</p>
                 </div>
                 <label class="so-autowarn-check"><input type="checkbox" id="so-fixwarn-never"><span>不再提示</span></label>
                 <div id="so-fixwarn-btns">
@@ -8691,8 +8725,11 @@ async function generateReply() {
                 if (plans.length) addPlanControls(assistantEl, plans);
             } else if (fixMode) {
                 // 失败时 .so-content 已显示剥离机制/思维链后的 cleanText，不覆盖它——只补一条说明 note。
-                if (!renderFixCard(assistantEl, contentEl, aEntry, finalText)) {
-                    addSystemNote('没能从模型回复里解析出 <FixedReply> 校正稿，已原样保留。请检查连接/模型，或换一句指令重试。');
+                const fixStatus = renderFixCard(assistantEl, contentEl, aEntry, finalText);
+                if (fixStatus === 'truncated') {
+                    addSystemNote('校正稿似乎被截断了（模型没写完就断了）——把设置里的「最大 token 数」调大些，或点 ↻ 重试。');
+                } else if (fixStatus !== 'ok') {
+                    addSystemNote('没能从模型回复里解析出校正稿，已原样保留。请检查连接/模型，或换一句指令重试。');
                 }
             }
         }
@@ -8766,8 +8803,10 @@ async function captureFixContext(s, { mode = 'manual' } = {}) {
 // 返回 true=已渲染校正卡；false=解析不出 <FixedReply>，**失败处理留给各调用点自己做**（两处失败语义不同：手动分支此时
 // .so-content 已显示剥离后的 cleanText、不应覆盖；按目标分支要把原文/「（空回复）」回填——故不在这里统一）。
 function renderFixCard(assistantEl, contentEl, aEntry, finalText) {
-    const parsed = parseFixedReply(finalText);
-    if (!parsed) return false;
+    // 手动宽容 / 自动严格：路由归一成 status；非 ok（'truncated' / 'unparseable'）原样回传给调用点出对应提示。
+    const r = parseFixReply(finalText, fixActiveMode);
+    if (r.status !== 'ok') return r.status;
+    const parsed = { fixed: r.fixed, problems: r.problems };   // 保持下游 parsed.fixed / parsed.problems / addFixApplyControls 契约不变
     aEntry.content = parsed.fixed;   // 历史里存干净的校正正文，而非原始 <FixedReply> 标签
     persistConvo();
     const html = renderReplyHtml(parsed.fixed);
@@ -8785,7 +8824,7 @@ function renderFixCard(assistantEl, contentEl, aEntry, finalText) {
         note.className = 'so-fix-changes';
         note.textContent = '模型没有做出改动——它认为按当前要求无需修改。可换一句更具体的指令、或调整目标后再试。';
         assistantEl.querySelector('.so-bubble')?.appendChild(note);
-        return true;   // 已处理（无 <FixedReply> 解析失败那条 note 不该再补）；但不挂应用按钮
+        return 'ok';   // 已处理（解析失败那条 note 不该再补）；但不挂应用按钮
     }
     if (parsed.problems) {
         const note = document.createElement('div');
@@ -8795,7 +8834,7 @@ function renderFixCard(assistantEl, contentEl, aEntry, finalText) {
         assistantEl.querySelector('.so-bubble')?.appendChild(note);
     }
     addFixApplyControls(assistantEl, parsed, fixOriginalReply, fixTargetIdx, fixExtraKeep, fixScope);
-    return true;
+    return 'ok';
 }
 
 // 「按目标校正最新回复」：用勾选的目标 + 约束（不是手动输入）当指令，对最新回复跑一次两段式校正并出卡。
@@ -8853,7 +8892,7 @@ async function runFixByTargets() {
             }
         }
         clearTyping();
-        if (!renderFixCard(assistantEl, contentEl, aEntry, finalText)) {
+        if (renderFixCard(assistantEl, contentEl, aEntry, finalText) !== 'ok') {
             contentEl.textContent = finalText || '（空回复）';
             addSystemNote('没能从模型回复里解析出 <FixedReply> 校正稿。请检查连接 / 模型，或调整目标后重试。');
         }
@@ -9486,7 +9525,12 @@ function addFixApplyControls(assistantEl, parsed, originalReply, targetIdx, keep
     let diffCard = null;
     diffBtn.addEventListener('click', () => {
         if (!diffCard) {
-            diffCard = renderDiffCard(stripMechanismBlocks(String(originalReply || '')), stripFixKeepMarks(parsed.fixed));
+            // 看改动 = 原文 ↔【实际会应用的结果】。after 用 composeFixedReply（把保留区块 + 机制块接回原位）而非
+            // 裸 parsed.fixed——否则「保留区块」在 after 里是被抹掉的占位标记，会被【误标成大段删除】（用户报的
+            // 「<branches> 放进保留区还是被删」其实是这个 diff 假象：块并没送模型、应用后也在，只是看改动显示错了）。
+            // 两侧都 stripMechanismBlocks，让 <UpdateVariable> 不在差异里刷屏；真正被删的【未保留】块仍会如实标红。
+            const appliedPreview = stripMechanismBlocks(composeFixedReply(parsed.fixed, originalReply, keepSections));
+            diffCard = renderDiffCard(stripMechanismBlocks(String(originalReply || '')), appliedPreview);
             bubble.appendChild(diffCard);
         } else {
             diffCard.hidden = !diffCard.hidden;
@@ -9638,6 +9682,48 @@ function parseFixedReply(text) {
         else { const fr = after.match(/<FixedReply\b[^>]*>/i); problems = (fr ? after.slice(0, fr.index) : after).trim(); }
     }
     return { fixed, problems };
+}
+
+// 纯函数：手动校正的宽容解析（recovery + 截断守卫）。仅手动模式用；自动仍用严格 parseFixedReply。
+// 恢复顺序（先命中先返回）：① 有 <FixedReply> → parseFixedReply（干净两端定界，向后兼容/容忍缺闭合）；
+// ② 无可用 <FixedReply> 但有【闭合的】<fix_think>…</fix_think> → </fix_think> 之后的正文；③ 连 <fix_think>
+// 都没有 → 整条回复即答案；④ <fix_think> 开了没闭 + 无 <FixedReply> → 判【截断】。剥思维链标签 + 抠掉残留
+// 结构标记（<fix_think>/<FixedReply>），避免它们混进被应用的正文。<fix_think> 标签名须与 FIX_SYSTEM_PROMPT_MANUAL 同步。可单测。
+function parseManualFix(text) {
+    const src = String(text || '');
+    const strip = (s) => stripReasoningTags(s)
+        .replace(/<\/?fix_think\b[^>]*>/gi, '')
+        .replace(/<\/?FixedReply\b[^>]*>/gi, '')
+        .trim();
+    // ① 显式 <FixedReply>（干净路径，向后兼容）
+    const strict = parseFixedReply(src);
+    if (strict && strict.fixed) return { fixed: strict.fixed };
+    // ②/④ 看 <fix_think>
+    const open = src.match(/<fix_think\b[^>]*>/i);
+    if (open) {
+        const rest = src.slice(open.index + open[0].length);
+        const close = rest.match(/<\/fix_think\s*>/i);
+        if (!close) return { truncated: true };                 // ④ 开了没闭 + 无 FixedReply → 截断
+        const after = strip(rest.slice(close.index + close[0].length));
+        return after ? { fixed: after } : { truncated: true };  // ② 闭合后的正文；空 → 也当截断
+    }
+    // ③ 无 fix_think、无 FixedReply → 整条即答案
+    const whole = strip(src);
+    return whole ? { fixed: whole } : null;
+}
+
+// 纯函数：按模式选解析器 + 归一成状态。手动 → parseManualFix（宽容 + 截断守卫）；其余（自动）→ parseFixedReply（严格）。
+// 返回 { status, fixed, problems }：status ∈ 'ok'|'truncated'|'unparseable'。renderFixCard 据 status 分派 DOM。可单测。
+function parseFixReply(text, mode) {
+    if (mode === 'manual') {
+        const r = parseManualFix(text);
+        if (!r) return { status: 'unparseable', fixed: '', problems: '' };
+        if (r.truncated) return { status: 'truncated', fixed: '', problems: '' };
+        return { status: 'ok', fixed: r.fixed, problems: '' };
+    }
+    const parsed = parseFixedReply(text);
+    if (!parsed) return { status: 'unparseable', fixed: '', problems: '' };
+    return { status: 'ok', fixed: parsed.fixed, problems: parsed.problems };
 }
 
 /* ------------------------------------------------------------------ *
