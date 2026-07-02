@@ -253,10 +253,20 @@
     const apikeyEl = document.getElementById("so-apikey");
     const modelEl = document.getElementById("so-model");
 
-    if (endpointEl) endpointEl.value = preset.endpoint || "";
-    if (apikeyEl) apikeyEl.value = preset.apikey || "";
-    if (modelEl) modelEl.value = preset.model || "";
+    if (endpointEl) {
+      endpointEl.value = preset.endpoint || "";
+      endpointEl.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (apikeyEl) {
+      apikeyEl.value = preset.apikey || "";
+      apikeyEl.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (modelEl) {
+      modelEl.value = preset.model || "";
+      modelEl.dispatchEvent(new Event("input", { bubbles: true }));
+    }
 
+    console.log(`[Story Oracle Patch] 已加载预设"${name}": ${preset.endpoint}`);
     alert(`已加载预设"${name}"`);
   }
 
