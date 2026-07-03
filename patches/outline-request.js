@@ -108,12 +108,20 @@
     const usePresetCheckbox = document.getElementById("so-outline-use-preset");
     const usePreset = usePresetCheckbox?.checked;
 
-    let basePrompt = OUTLINE_DEFAULT_SYSTEM_PROMPT;
+    // 参谋模式「套用我的补全预设」的语义是【叠加】而非覆盖：预设内容（越狱 / 破限基底）
+    // 在前，模式自身的职责指令在后。大纲模式沿用同一语义 —— 内置大纲职责提示词始终保留，
+    // 勾选补全预设时把预设提示词【前置】作为基底，再叠上大纲职责，最后接大纲模板。
+    // 这样既借到了预设的越狱力，又不会丢掉大纲模式「只规划不续写 / 严格输出标签」的核心约束。
+    let basePrompt;
     if (usePreset) {
       const presetPrompt = getPresetSystemPrompt();
       if (presetPrompt) {
-        basePrompt = presetPrompt;
+        basePrompt = presetPrompt + "\n\n" + OUTLINE_DEFAULT_SYSTEM_PROMPT;
+      } else {
+        basePrompt = OUTLINE_DEFAULT_SYSTEM_PROMPT;
       }
+    } else {
+      basePrompt = OUTLINE_DEFAULT_SYSTEM_PROMPT;
     }
 
     const templateSelect = document.getElementById(

@@ -205,7 +205,7 @@
                         <div style="display: flex; gap: 8px;">
                             <label class="so-checkbox-field" style="flex: 1;">
                                 <input type="checkbox" id="so-outline-use-preset">
-                                <span>套用我的补全预设</span>
+                                <span>套用我的补全预设（大纲提示词叠加其上）</span>
                             </label>
                             <button type="button" class="so-btn-secondary" id="so-outline-fix-tags" title="为AI回复补充或修正标签">
                                 <i class="fa-solid fa-tags"></i> 标签补充(仅限最新一楼)
