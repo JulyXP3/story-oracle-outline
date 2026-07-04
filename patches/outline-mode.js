@@ -500,21 +500,34 @@
         inputBox.placeholder =
           "就当前剧情问点什么吧...（Enter发送，Shift+Enter换行）";
     } else {
-      // 激活大纲模式，关闭其他模式
-      win.classList.remove("so-diag-on", "so-lb-on", "so-adv-on", "so-fix-on");
+      // 激活大纲模式：先经 setOracleMode("chat") 把 index.js 的模式标志（diagnoseMode /
+      // lorebookMode / advisorMode / fixMode）全部复位为 false。这些标志是 index.js 的
+      // 闭包变量、无法直接赋值，只能借 setOracleMode 复位。否则从世界书 / 诊断等模式切过来时
+      // index.js 仍认为处于原模式 → generateReply 里 isPlainChat=false → AI 回复不渲染 Markdown。
+      const pwin = window.parent || window;
+      if (typeof pwin.setOracleMode === "function") {
+        pwin.setOracleMode("chat");
+      } else {
+        // 退路：setOracleMode 不可用时手动清类（与旧行为一致，但无法复位 index.js 标志）
+        win.classList.remove(
+          "so-diag-on",
+          "so-lb-on",
+          "so-adv-on",
+          "so-fix-on",
+        );
+        win
+          .querySelector("#so-diagnose-btn")
+          ?.classList.remove("so-diag-active");
+        win.querySelector("#so-lorebook-btn")?.classList.remove("so-lb-active");
+        win.querySelector("#so-advisor-btn")?.classList.remove("so-adv-active");
+        win.querySelector("#so-fix-btn")?.classList.remove("so-fix-active");
+      }
       win.classList.add("so-outline-on");
-
-      // 取消其他按钮的激活状态
-      win.querySelector("#so-diagnose-btn")?.classList.remove("so-diag-active");
-      win.querySelector("#so-lorebook-btn")?.classList.remove("so-lb-active");
-      win.querySelector("#so-advisor-btn")?.classList.remove("so-adv-active");
-      win.querySelector("#so-fix-btn")?.classList.remove("so-fix-active");
 
       // 激活大纲按钮
       outlineBtn?.classList.add("so-outline-active");
       if (inputBox)
-        inputBox.placeholder =
-          "你需要什么样的大纲? 别忘了选择大纲模板捏~ （Enter发送，Shift+Enter换行）";
+        inputBox.placeholder = "你需要什么样的大纲? 别忘了选择大纲模板捏~";
     }
   }
 

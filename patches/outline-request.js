@@ -184,6 +184,40 @@
     return basePrompt;
   }
 
+  // 大纲模式剔除「${角色名}-剧情指导」世界书里【启用】条目的内容。
+  // 这些条目是 outline-inject.js 注入的剧情大纲（constant，恒被世界书扫描带入请求），
+  // 大纲模式再带它进请求会让模型看到上一次的大纲、白白多耗 token，还可能左右新大纲的生成。
+  // 做法是：从 buildWorldInfo() 已构建好的世界书字符串里，把启用条目的 content 原样剔除
+  //（禁用的旧条目本就不会被注入，跳过）。书不存在 / 读取失败则原样返回，零副作用。
+  async function stripPlotGuide(worldInfo, ctx) {
+    if (!worldInfo || !ctx || typeof ctx.loadWorldInfo !== "function") {
+      return worldInfo;
+    }
+    let charName = null;
+    try { charName = ctx.name2 || null; } catch (e) { /* ignore */ }
+    if (!charName) return worldInfo;
+
+    const bookName = `${charName}-剧情指导`;
+    let data;
+    try {
+      data = await ctx.loadWorldInfo(bookName);
+    } catch (e) {
+      return worldInfo; // 书不存在或读取失败，原样返回
+    }
+    const entries = Object.values((data && data.entries) || {});
+    if (!entries.length) return worldInfo;
+
+    let stripped = worldInfo;
+    for (const e of entries) {
+      if (!e || e.disable) continue; // 只剥离启用条目（禁用的旧条目不会被注入）
+      const c = String(e.content || "").trim();
+      if (c && stripped.indexOf(c) !== -1) {
+        stripped = stripped.split(c).join("");
+      }
+    }
+    return stripped.replace(/\n{3,}/g, "\n\n").trim();
+  }
+
   // 大纲模式请求重写：把 body.messages 里所有系统消息合并成一条
   //   「大纲提示词 + 角色卡 + 世界书 + 最近对话记录」
   // 的系统消息，保留下方的 user / assistant 对话。这样大纲模式下只会有大纲模式的
@@ -213,8 +247,12 @@
         }
         // 世界书（尊重设置里的「世界书 / 知识库」选项；off 时 buildWorldInfo 返回空串）
         if (typeof pwin.buildWorldInfo === "function") {
-          const wi = await pwin.buildWorldInfo();
-          if (wi) parts.push("=== 世界书 / 设定 ===\n" + wi);
+          let wi = await pwin.buildWorldInfo();
+          if (wi) {
+            // 剔除「剧情指导」条目内容，避免大纲请求携带上一次注入的剧情大纲导致 token 膨胀
+            wi = await stripPlotGuide(wi, ctx);
+            if (wi) parts.push("=== 世界书 / 设定 ===\n" + wi);
+          }
         }
         // 最近的故事对话记录
         if (typeof pwin.buildTranscript === "function") {
@@ -236,9 +274,21 @@
       }
     }
 
-    // 用单一系统消息替换所有系统消息，保留 user / assistant 对话
+    // 用单一系统消息替换所有系统消息。大纲模式每轮请求【只带最新一条用户指令】，
+    // 丢弃全部历史对话（含旧大纲）——大纲生成是无状态的：系统提示词里已带足故事上下文
+    //（角色卡 / 世界书 / 主聊天对话记录），旧大纲只会徒增 token、还可能左右新大纲的生成；
+    // 且不同模板用不同标签，按标签折叠也不严谨。仅改请求体副本，UI 历史不受影响。
     const nonSystem = body.messages.filter((m) => m.role !== "system");
-    body.messages = [{ role: "system", content: systemContent }, ...nonSystem];
+    let lastUser = null;
+    for (let i = nonSystem.length - 1; i >= 0; i--) {
+      if (nonSystem[i] && nonSystem[i].role === "user") {
+        lastUser = nonSystem[i];
+        break;
+      }
+    }
+    body.messages = lastUser
+      ? [{ role: "system", content: systemContent }, lastUser]
+      : [{ role: "system", content: systemContent }];
   }
 
   function interceptFetch() {
