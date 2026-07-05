@@ -72,7 +72,7 @@
     if (
       typeof window.StoryOraclePatch?.injectOutlineToWorldInfo === "function"
     ) {
-      window.StoryOraclePatch.injectOutlineToWorldInfo(content);
+      window.StoryOraclePatch.injectOutlineToWorldInfo(content, msg);
     } else {
       // 简单实现：复制到剪贴板
       navigator.clipboard.writeText(content).then(() => {
@@ -148,6 +148,28 @@
     // 保存按钮
     saveBtn.addEventListener("click", () => {
       const newText = textarea.value;
+
+      // 持久化到 convo：找到对应条目（按 DOM 上的 data-cid 匹配 entry.id），
+      // 更新 entry.content 并 persistConvo()。否则只改了 DOM，F5 刷新会从元数据还原旧内容。
+      const pwin = window.parent || window;
+      const cid = msg?.dataset?.cid;
+      if (cid != null && typeof pwin.convoForPrompt === "function") {
+        try {
+          const entry = pwin
+            .convoForPrompt()
+            .find((e) => e && String(e.id) === String(cid));
+          if (entry) {
+            entry.content = newText;
+            if (typeof pwin.persistConvo === "function") pwin.persistConvo();
+          } else {
+            console.warn(
+              "[Story Oracle Patch] 未找到 data-cid 对应的 convo 条目，本次编辑不会持久化",
+            );
+          }
+        } catch (e) {
+          console.error("[Story Oracle Patch] 持久化编辑失败:", e);
+        }
+      }
 
       // 更新原始内容
       contentEl.dataset.originalContent = newText;

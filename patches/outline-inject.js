@@ -184,49 +184,44 @@
         }
     }
 
-    // 显示三选项对话框
-    function showThreeChoiceDialog(title, message, choice1, choice2, choice3) {
+    // 显示内联三选项面板（挂在 AI 回复下方，手机友好；不再用满屏弹窗）
+    function showInlineChoicePanel(anchorMsg, message, choices) {
         return new Promise((resolve) => {
-            const overlay = document.createElement('div');
-            overlay.className = 'so-dialog-overlay';
-            overlay.innerHTML = `
-                <div class="so-dialog">
-                    <div class="so-dialog-header">
-                        <h3>${title}</h3>
-                    </div>
-                    <div class="so-dialog-body">
-                        <p>${message}</p>
-                    </div>
-                    <div class="so-dialog-actions">
-                        <button type="button" class="so-dialog-btn so-dialog-btn-primary" data-choice="create">${choice1}</button>
-                        <button type="button" class="so-dialog-btn so-dialog-btn-secondary" data-choice="overwrite">${choice2}</button>
-                        <button type="button" class="so-dialog-btn so-dialog-btn-cancel" data-choice="cancel">${choice3}</button>
-                    </div>
-                </div>
-            `;
+            if (!anchorMsg || !anchorMsg.parentNode) { resolve('cancel'); return; }
+            // 一次只允许一个选择面板：先清掉已有的
+            document.querySelectorAll('.so-inline-choice-panel').forEach(p => p.remove());
 
-            document.body.appendChild(overlay);
+            const panel = document.createElement('div');
+            panel.className = 'so-inline-choice-panel';
 
-            const buttons = overlay.querySelectorAll('.so-dialog-btn');
-            buttons.forEach(btn => {
+            const msgEl = document.createElement('div');
+            msgEl.className = 'so-inline-choice-msg';
+            msgEl.textContent = message;
+
+            const actions = document.createElement('div');
+            actions.className = 'so-inline-choice-actions';
+            choices.forEach(c => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'so-fix-run-btn so-inline-choice-btn ' + (c.variant || '');
+                btn.textContent = c.label;
                 btn.addEventListener('click', () => {
-                    const choice = btn.dataset.choice;
-                    overlay.remove();
-                    resolve(choice);
+                    panel.remove();
+                    resolve(c.value);
                 });
+                actions.appendChild(btn);
             });
 
-            overlay.addEventListener('click', (e) => {
-                if (e.target === overlay) {
-                    overlay.remove();
-                    resolve('cancel');
-                }
-            });
+            panel.appendChild(msgEl);
+            panel.appendChild(actions);
+            anchorMsg.parentNode.insertBefore(panel, anchorMsg.nextSibling);
+            try { panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) { /* ignore */ }
         });
     }
 
     // 注入剧情大纲到世界书
-    async function injectOutlineToWorldInfo(content) {
+    // anchorMsg：点击「注入」按钮所在的那条 AI 消息元素，用于把选择面板挂到它下方
+    async function injectOutlineToWorldInfo(content, anchorMsg) {
         if (!content || !content.trim()) {
             showToast('内容为空', 'warning');
             return false;
@@ -295,13 +290,15 @@
                 return true;
             }
 
-            // 询问用户操作方式
-            const choice = await showThreeChoiceDialog(
-                '注入剧情大纲',
-                `世界书「${bookName}」已有 ${plotEntries.length} 个剧情条目\n请选择操作方式`,
-                '新建条目',
-                '覆盖最新',
-                '取消'
+            // 询问用户操作方式（内联面板挂在 AI 回复下方，手机友好）
+            const choice = await showInlineChoicePanel(
+                anchorMsg,
+                `世界书「${bookName}」已有 ${plotEntries.length} 个剧情条目，请选择操作方式`,
+                [
+                    { label: '新建条目', value: 'create', variant: 'primary' },
+                    { label: '覆盖最新', value: 'overwrite', variant: 'secondary' },
+                    { label: '取消', value: 'cancel', variant: '' },
+                ]
             );
 
             if (choice === 'cancel') {
@@ -424,89 +421,61 @@
         }, 3000);
     }
 
-    // 添加对话框样式
+    // 添加内联选择面板样式
     function addDialogStyles() {
         if (document.getElementById('so-dialog-styles')) return;
 
         const style = document.createElement('style');
         style.id = 'so-dialog-styles';
         style.textContent = `
-            .so-dialog-overlay {
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: rgba(0, 0, 0, 0.7);
+            /* 内联三选项面板：挂在 AI 回复下方，贴合消息宽度，手机不超出屏幕 */
+            .so-inline-choice-panel {
+                margin: 6px 0;
+                padding: 9px 10px;
+                border-radius: 8px;
+                border: 1px solid color-mix(in srgb, var(--so-outline-accent, #4ade80) 40%, transparent);
+                background: color-mix(in srgb, var(--so-outline-accent, #4ade80) 8%, transparent);
                 display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 10000;
+                flex-direction: column;
+                gap: 8px;
             }
 
-            .so-dialog {
-                background: var(--SmartThemeBlurTintColor, #1a1a1a);
-                border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
-                border-radius: 12px;
-                padding: 20px;
-                min-width: 400px;
-                max-width: 500px;
-            }
-
-            .so-dialog-header h3 {
-                margin: 0 0 16px 0;
-                font-size: 1.2em;
-            }
-
-            .so-dialog-body {
-                margin-bottom: 20px;
+            .so-inline-choice-msg {
+                font-size: 0.85em;
                 line-height: 1.5;
                 white-space: pre-line;
+                opacity: 0.9;
             }
 
-            .so-dialog-actions {
+            .so-inline-choice-actions {
                 display: flex;
-                gap: 8px;
-                justify-content: flex-end;
+                gap: 6px;
             }
 
-            .so-dialog-btn {
-                padding: 8px 16px;
-                border-radius: 8px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                cursor: pointer;
-                font-family: inherit;
-                font-size: 0.9em;
-                transition: all 0.2s;
+            .so-inline-choice-actions .so-fix-run-btn {
+                flex: 1;
+                margin-top: 0;
+                text-align: center;
             }
 
-            .so-dialog-btn-primary {
+            .so-inline-choice-btn.primary {
                 background: rgba(74, 222, 128, 0.2);
                 color: #4ade80;
                 border-color: #4ade80;
             }
 
-            .so-dialog-btn-primary:hover {
+            .so-inline-choice-btn.primary:hover {
                 background: rgba(74, 222, 128, 0.3);
             }
 
-            .so-dialog-btn-secondary {
+            .so-inline-choice-btn.secondary {
                 background: rgba(59, 130, 246, 0.2);
                 color: #3b82f6;
                 border-color: #3b82f6;
             }
 
-            .so-dialog-btn-secondary:hover {
+            .so-inline-choice-btn.secondary:hover {
                 background: rgba(59, 130, 246, 0.3);
-            }
-
-            .so-dialog-btn-cancel {
-                background: rgba(255, 255, 255, 0.1);
-                color: var(--SmartThemeBodyColor, #e6e6e6);
-            }
-
-            .so-dialog-btn-cancel:hover {
-                background: rgba(255, 255, 255, 0.15);
             }
         `;
         document.head.appendChild(style);
