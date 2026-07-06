@@ -165,12 +165,17 @@
     updatePresetList();
   }
 
-  // 更新预设UI可见性（所有连接模式下均显示）
+  // 更新预设UI可见性（仅限直连模式和最终模式——配置文件模式不需要）
   function updatePresetVisibility() {
     const presetContainer = document.getElementById("so-preset-container");
     if (!presetContainer) return;
 
-    presetContainer.style.display = "block";
+    const modeSelect = document.getElementById("so-mode");
+    const modeVal = modeSelect ? modeSelect.value : "";
+    // 直连模式 或 最终模式（含下拉显示值和内部标志）
+    const s = (typeof getSettings === "function") ? getSettings() : {};
+    const isDirectOrFinal = modeVal === "direct" || modeVal === "final" || !!s._useFinalMode;
+    presetContainer.style.display = isDirectOrFinal ? "block" : "none";
   }
 
   // 从 localStorage 加载预设（防御：确保返回纯对象，拒绝数组 / 非对象值）

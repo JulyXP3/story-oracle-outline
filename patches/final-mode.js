@@ -227,7 +227,9 @@
         return;
       }
 
-      // 非最终模式：委托原函数
+      // 非最终模式：先隐藏最终字段，再委托原函数处理直连 / profile 的显示
+      const ff = document.getElementById("so-final-fields");
+      if (ff) ff.style.display = "none";
       if (origApplyModeVisibility) origApplyModeVisibility();
     };
 
