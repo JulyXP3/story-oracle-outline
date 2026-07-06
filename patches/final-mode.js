@@ -202,7 +202,7 @@
       "</div></label>" +
       '<select id="so-model-list-final" style="display:none"></select>' +
       '<div class="so-hint" id="so-model-hint-final"></div>' +
-      '<div class="so-hint" style="margin-top:6px">最终模式：<b>不会自动修改你输入的 URL</b>，请求经酒馆服务器转发（自动避免CORS）。前面两种模式都连不上时试试这个。可保存为"连接预设"快速切换。</div>';
+      '<div class="so-hint" style="margin-top:6px">最终模式：请求经酒馆服务器转发（自动避免CORS）。前面两种模式都连不上时试试这个。参考酒馆询问机做出来的模式。</div>';
 
     directFields.parentNode.insertBefore(finalFields, directFields.nextSibling);
 

@@ -57,7 +57,7 @@
 3. 节奏诊断：本章在铺垫/冲突升级/转折/后果中属哪个位置，与前后章是否失衡
 4. OOC风险：对可能被质疑OOC的行为，确认人物内在逻辑成立
 
-审查通过后，直接输出填充后的大纲模板（仅模板内容，无任何附加文字）。
+审查通过后，直接输出填充后的大纲模板（仅填充之后的模板内容，无任何附加文字）。
 
 ## 补充约束
 - 人物动机须可追溯到Step 1档案，不可凭空加设定
@@ -180,7 +180,9 @@
       }
     };
     pwin.generateReply._soWrapped = true;
-    console.log("[Story Oracle Patch] generateReply 已包裹（用于区分神谕 / 主聊天请求）");
+    console.log(
+      "[Story Oracle Patch] generateReply 已包裹（用于区分神谕 / 主聊天请求）",
+    );
     return true;
   }
 
@@ -308,7 +310,9 @@
       }
     };
     pwin.scrollToBottom._soCoalesced = true;
-    console.log("[Story Oracle Patch] scrollToBottom 已合流到 raf（流式每帧最多一次）");
+    console.log(
+      "[Story Oracle Patch] scrollToBottom 已合流到 raf（流式每帧最多一次）",
+    );
     return true;
   }
 
@@ -367,7 +371,11 @@
       return worldInfo;
     }
     let charName = null;
-    try { charName = ctx.name2 || null; } catch (e) { /* ignore */ }
+    try {
+      charName = ctx.name2 || null;
+    } catch (e) {
+      /* ignore */
+    }
     if (!charName) return worldInfo;
 
     const bookName = `${charName}-剧情指导`;
