@@ -175,6 +175,9 @@
 - 修改前先明确本体对应函数是否仍存在，尤其是 `callDirect`、`streamDirect`、`streamDirectArc`、`normalizeUrl`、`modelsUrl`。
 - 同时验证直连模式、后端转发模式、最终模式三者，避免修最终模式时破坏原生直连。
 - 保持“UI/localStorage 保存原始地址，本体 settings 写入哨兵 URL”的设计，除非本体连接层已经提供正式 Hook。
+- 连接预设的唯一共享存储仍是本体 `settings.connPresets`。最终模式只在点击“保存/加载预设”时拦截按钮，把预设读写映射到 `#so-endpoint-final`、`#so-apikey-final`、`#so-model-final` 和 `so_final_mode_fields`；直连模式继续走本体原生按钮事件。
+- 最终模式保存预设时必须保存原始 endpoint，不要保存 `finalEndpointForClassic()` 生成的 `/chat/completions` 哨兵地址。否则直连/最终模式共用同一预设时会把内部兼容细节泄漏给用户配置。
+- 如果共享预设里的 endpoint 已经以 `/chat/completions` 结尾，最终模式获取模型列表时应转换到同级 `/models`，不要拼成 `/chat/completions/models`。
 
 未来最好推动本体新增连接层 Hook，例如：
 
@@ -198,4 +201,6 @@
 - 点击“编辑”，保存后刷新，确认编辑结果仍存在。
 - 点击“标签补充”，确认最新回复被补标签且刷新后仍存在。
 - 使用最终模式填写 endpoint/key/model，获取模型并发送一次请求。
+- 在直连模式保存一个连接预设，切到最终模式后确认同一个预设出现在下拉框，加载后最终模式字段被正确填入。
+- 在最终模式保存一个连接预设，切回直连模式后确认同一个预设出现在下拉框，加载后直连字段被正确填入；删除该预设后两个模式都不再显示。
 - 切回普通直连或配置文件模式，确认原本连接方式未被最终模式污染。

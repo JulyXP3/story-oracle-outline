@@ -68,6 +68,7 @@ function finalModelsUrl(u) {
   u = (u || '').trim().replace(/\/+$/, '');
   if (!u) return u;
   if (/\/models$/.test(u)) return u;
+  if (/\/chat\/completions$/.test(u)) return u.replace(/\/chat\/completions$/, '/models');
   return u + '/models';
 }
 
@@ -184,6 +185,112 @@ function syncSettingsToFinalFields() {
   if (endpointEl) endpointEl.value = ff.endpoint || '';
   if (apikeyEl) apikeyEl.value = ff.apiKey || '';
   if (modelEl) modelEl.value = ff.model || '';
+}
+
+function connPresetUpsertCompat(list, preset) {
+  const upsert = getGlobalBinding('connPresetUpsert');
+  if (typeof upsert === 'function') return upsert(list, preset);
+  const arr = Array.isArray(list) ? list.filter((p) => p && p.name !== preset.name) : [];
+  arr.push({ name: preset.name, endpoint: preset.endpoint || '', apiKey: preset.apiKey || '', model: preset.model || '' });
+  return arr;
+}
+
+function renderConnPresetsCompat(api, selectedName) {
+  const render = getGlobalBinding('renderConnPresets');
+  if (typeof render === 'function') {
+    render();
+  } else {
+    const sel = document.getElementById('so-conn-preset-select');
+    if (sel) {
+      const list = getSettingsSafe(api).connPresets || [];
+      sel.innerHTML = '<option value="">（选择预设加载）</option>';
+      for (const p of list) {
+        if (!p || !p.name) continue;
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        sel.appendChild(opt);
+      }
+    }
+  }
+  const sel = document.getElementById('so-conn-preset-select');
+  if (sel && selectedName && Array.from(sel.options).some((opt) => opt.value === selectedName)) sel.value = selectedName;
+}
+
+function saveFinalPreset(api, event) {
+  if (!isFinalMode(api)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  const nameEl = document.getElementById('so-conn-preset-name');
+  const name = nameEl ? nameEl.value.trim() : '';
+  if (!name) {
+    if (window.toastr) window.toastr.info('先给预设起个名字', '故事神谕');
+    return;
+  }
+
+  const { endpointEl, apikeyEl, modelEl } = getFinalFieldEls();
+  const endpoint = endpointEl ? endpointEl.value.trim() : '';
+  const apiKey = apikeyEl ? apikeyEl.value.trim() : '';
+  const model = modelEl ? modelEl.value.trim() : '';
+  const ff = getFinalFields();
+  ff.endpoint = endpoint;
+  ff.apiKey = apiKey;
+  ff.model = model;
+  saveFinalFields(ff);
+
+  const s = getSettingsSafe(api);
+  s.connPresets = connPresetUpsertCompat(s.connPresets, {
+    name,
+    endpoint,
+    apiKey,
+    model,
+  });
+  syncFinalFieldsToSettings(api);
+  mirrorFinalToDirectFields();
+  if (typeof window.updateBadge === 'function') window.updateBadge();
+  saveSettings();
+  if (nameEl) nameEl.value = '';
+  renderConnPresetsCompat(api, name);
+}
+
+function loadFinalPreset(api, event) {
+  if (!isFinalMode(api)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  const sel = document.getElementById('so-conn-preset-select');
+  const name = sel ? sel.value : '';
+  const p = (getSettingsSafe(api).connPresets || []).find((x) => x && x.name === name);
+  if (!p) return;
+
+  const { endpointEl, apikeyEl, modelEl } = getFinalFieldEls();
+  if (endpointEl) endpointEl.value = p.endpoint || '';
+  if (apikeyEl) apikeyEl.value = p.apiKey || '';
+  if (modelEl) modelEl.value = p.model || '';
+
+  const ff = getFinalFields();
+  ff.endpoint = p.endpoint || '';
+  ff.apiKey = p.apiKey || '';
+  ff.model = p.model || '';
+  saveFinalFields(ff);
+  syncFinalFieldsToSettings(api);
+  mirrorFinalToDirectFields();
+  if (typeof window.updateBadge === 'function') window.updateBadge();
+  saveSettings();
+}
+
+function bindFinalPresetControls(api) {
+  const saveBtn = document.getElementById('so-conn-preset-save');
+  const loadBtn = document.getElementById('so-conn-preset-load');
+  if (saveBtn && saveBtn.dataset.soFinalPresetBound !== 'true') {
+    saveBtn.dataset.soFinalPresetBound = 'true';
+    saveBtn.addEventListener('click', (event) => saveFinalPreset(api, event), true);
+  }
+  if (loadBtn && loadBtn.dataset.soFinalPresetBound !== 'true') {
+    loadBtn.dataset.soFinalPresetBound = 'true';
+    loadBtn.addEventListener('click', (event) => loadFinalPreset(api, event), true);
+  }
 }
 
 function enterFinalMode(api) {
@@ -541,6 +648,7 @@ function installFinalMode(api) {
   bindFinalField(api, 'so-apikey-final');
   bindFinalField(api, 'so-model-final');
   bindFinalModelControls(api);
+  bindFinalPresetControls(api);
   restoreInitialState(api);
 
   installed = true;
