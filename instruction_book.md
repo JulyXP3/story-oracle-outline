@@ -2,101 +2,130 @@
 
 本文面向后续接手维护本仓库的人，说明当前插件相对《交接指南》中 Hook API 路线的符合情况、项目结构、本体与插件的边界，以及后续改动应该从哪里下手。
 
-## 1. 当前结论
+> **版本基线**：本文对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁，本插件已**全部走 `StoryOracleAPI` 正式接口 + 本体原生开关**，不再依赖任何本体私有函数、闭包变量、`eval`、DOM patch 或事件拦截。
 
-本仓已经从旧的 “内置故事神谕本体+外置补丁的方式” 迁移成 “独立插件 + `window.StoryOracleAPI` Hook API” 的结构。大纲模式主链路已经符合交接指南：
+---
+
+## 1. 架构现状
+
+本仓已经从旧的「内置故事神谕本体 + 外置补丁」迁移成「独立插件 + `window.StoryOracleAPI` Hook API」。大纲模式主链路完全符合交接指南：
 
 - 插件入口通过 `story-oracle-ready` / `window.StoryOracleAPI` 握手。
 - 大纲模式通过 `api.registerMode()` 注册。
 - 大纲请求通过 `registerMode.onSend` 构造 `{ system, messages }`，不再全局拦截 `fetch`。
 - 回复按钮通过 `api.addMessageAction()` 注册。
-- 编辑/标签补充通过 `api.updateReply()` 持久化。
+- 编辑 / 标签补充通过 `api.updateReply()` 持久化。
 - Markdown 渲染、历史消息恢复、`data-so-raw` 原文保存由本体负责。
 
-仍然不完全符合 Hook 路线的主要是“最终模式兼容层”。它为了扩展故事神谕本体的连接方式，继续改写本体内部函数和连接设置 DOM。这不是大纲模式必需链路，而是 Hook API v1 尚未覆盖连接层时保留下来的兼容补丁。
+故事神谕本体 1.22.0 把旧两块补丁原生化后，本插件已整层删除并回到纯 Hook API 路线：
 
-## 2. 违背或绕开交接指南 Hook 路线的地方
+- **旧最终模式** → 本体直连区原生开关 `directRawUrl`（「地址原样使用（不自动补 /v1）」）+ `directViaBackend`（「经酒馆后端转发」）。连接预设原生保存 / 恢复 `rawUrl` 字段。
+- **删除二次确认**（删预设 / 删消息）→ 本体 1.22.0 原生 `uiConfirm`。
+- **旧用户配置迁移** → `src/migrate-final-mode.js` 启动时一次性把停留在旧最终模式的配置搬到本体原生开关上。
 
-交接指南的核心要求是：不要依赖故事神谕本体的私有函数、闭包变量、未承诺 DOM 结构和请求链路；尽量只使用 `StoryOracleAPI` 暴露的稳定接口。下面按风险从高到低列出当前仍然绕开的地方。
+> 关于本体 1.22.0 新增的 `api.unsafe.eval(code)`：它是原作者提供的**非正式逃生阀**（模块作用域直接 `eval`，可读 / 改本体内部任意顶层绑定），但**不入版本契约、无兼容承诺**。本插件 1.5.0 **未使用**它——迁移落盘走的是正式接口 `api.context.getContext().saveSettingsDebounced()`。日常维护仍首选正式接口；`unsafe.eval` 只在正式接口确实覆盖不到、且能接受本体更新后跟着改的风险时才考虑。
 
-| 位置                | 当前做法                                                                                                                                                                                             | 为什么违背 Hook 路线                                                                                                          | 维护建议                                                                                                                                              |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/final-mode.js` | 用 `eval` 读取/改写本体全局绑定：`applyModeVisibility`、`updateBadge`、`normalizeUrl`、`modelsUrl`、`callDirect`、`streamDirect`、`streamDirectArc`、`loadSettingsIntoForm`、`onFetchModels`、`save` | 这些都是故事神谕本体私有实现，不属于 `StoryOracleAPI` v1 的稳定契约。本体重命名、改成闭包私有、改参数形状都会导致最终模式失效 | 这是最高风险点。后续若原作者愿意加 Hook，应推动新增“连接模式注册 / endpoint normalize / model fetch / request dispatch”相关 API，然后删除这整层 patch |
-| `src/final-mode.js` | 直接操作本体连接设置 DOM：`#so-mode`、`#so-direct-fields`、`#so-endpoint`、`#so-apikey`、`#so-model`、`#so-profile-fields`、`#so-mode-badge` 等                                                      | 这些 DOM 不是交接指南冻结的核心 Hook 锚点。当前逻辑依赖本体设置面板内部结构                                                   | 尽量把选择器集中留在本文件，不要扩散到其它模块。每次升级故事神谕本体时，优先验证最终模式的显示、保存、取模型、发送请求                                |
-| `src/final-mode.js` | 把用户填写的最终模式地址临时改写成带 `/chat/completions` 的哨兵 URL，再借本体后端转发逻辑剥掉后缀                                                                                                    | 这是针对本体 `normalizeUrl` 和后端转发实现细节的适配，不是稳定接口                                                            | 保持注释里的四条架构说明，不要随手改 URL 转换逻辑。若本体连接层实现改变，应重新核对请求实际发出的 `custom_url`                                        |
-| `src/plugin.js`     | `installDeleteConfirmations()` 捕获 `#so-conn-preset-del` 和 `.so-del-btn` 的点击事件，并用 `data-so-delete-confirmed` 放行二次点击                                                                  | 这绕过 Hook API，依赖本体按钮选择器和删除交互。交接指南没有为“删除确认”提供 Hook                                              | 风险较低，因为只是 UX 防误删。若本体按钮改名，功能会失效但不会破坏大纲主链路。升级时可单独验证删除预设、删除消息                                      |
-| `src/prompt.js`     | 已调用 `api.context.buildWorldInfo({ excludeBooks })`，但之后仍用 `ctx.loadWorldInfo` / `TavernHelper.getLorebookEntries` 兜底剔除“剧情指导”内容                                                     | 这不是依赖本体私有函数，但属于 Hook 之外的外部依赖和双保险逻辑。指南原本期望 `excludeBooks` 就足够                            | 可保留。它解决不同环境里 `excludeBooks` 可能未完全剔除的兼容问题。若确认本体 1.21+ 的 `excludeBooks` 稳定可靠，可以简化掉兜底剔除                     |
+---
 
-以下位置虽然没有完全走 `StoryOracleAPI`，但不算违背交接指南：
+## 2. Hook 路线符合情况
 
-- `src/outline-inject.js` 使用 TavernHelper 写入 `<角色>-剧情指导` 世界书。交接指南已明确该文件本来就与故事神谕本体无关，应保留。
-- `src/templates.js` 使用 localStorage 保存大纲模板。这是插件自有状态，不依赖本体。
-- `src/ui.js` 在 `registerMode.buildBar()` 给的容器里构建大纲设置栏。这是 Hook API 设计允许的扩展点。
-- `src/message-actions.js` 使用 `api.addMessageAction()`、`api.updateReply()` 和 `data-so-raw`。这是符合 Hook 路线的实现。
+交接指南的核心要求：不要依赖故事神谕本体的私有函数、闭包变量、未承诺 DOM 结构和请求链路；尽量只使用 `StoryOracleAPI` 暴露的稳定接口。
+
+**结论：1.5.0 起本插件没有违背 Hook 路线的地方。** 下方按「走 Hook API」和「Hook 之外但不算违背」两类列出，便于维护者快速定位。
+
+### 2.1 走 `StoryOracleAPI` 正式接口的模块
+
+| 模块                    | 使用的接口                                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/plugin.js`         | `api.isCompatible()`、`api.registerMode()`、`api.addMessageAction()`（经 `message-actions.js`）       |
+| `src/prompt.js`         | `api.context.getContext()`、`api.context.getSettings()`、`api.context.buildCardSection()`、`api.context.buildWorldInfo({ excludeBooks })`、`api.context.buildTranscript()` |
+| `src/message-actions.js`| `api.addMessageAction()`、`api.updateReply()`、`data-so-raw`                                          |
+| `src/ui.js`             | `registerMode.buildBar()` 给的容器（Hook API 设计允许的扩展点）                                       |
+| `src/migrate-final-mode.js` | `api.context.getSettings()`、`api.context.getContext().saveSettingsDebounced()`                  |
+
+### 2.2 Hook 之外但不算违背的依赖
+
+这些位置没有完全走 `StoryOracleAPI`，但**不属于依赖故事神谕本体私有实现**，不算违背 Hook 路线：
+
+| 位置                | 做法                                                                                                                       | 性质                                                                                              | 维护建议                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `src/outline-inject.js` | 用 TavernHelper 写入 `<角色>-剧情指导` 世界书                                                                          | SillyTavern / TavernHelper 侧能力，交接指南已明确该文件与故事神谕本体无关                          | 保留。TavernHelper API 变化时再跟进                                                                                  |
+| `src/prompt.js`      | 调 `api.context.buildWorldInfo({ excludeBooks })` 后，仍用 `ctx.loadWorldInfo` / `TavernHelper.getLorebookEntries` 兜底剔除「剧情指导」 | 外部依赖（ST / TavernHelper）+ 双保险逻辑，**不是**本体私有函数依赖                                | 可保留。它解决不同环境里 `excludeBooks` 可能未完全剔除的兼容问题。若确认本体 1.21+ 的 `excludeBooks` 稳定可靠，可简化掉兜底剔除 |
+| `src/templates.js`   | 用 localStorage 保存大纲模板                                                                                               | 插件自有状态，不依赖本体                                                                           | 保留                                                                                                                  |
+
+> ⚠️ 注意：旧版文档曾把 `src/prompt.js` 的兜底剔除列为「违背 Hook 路线」，那是旧 `final-mode.js` 时代风险表里的归类错误——它既不是本体私有函数，也不是 `eval`，本就不属于「违背故事神谕 Hook 路线」范畴。1.5.0 文档已更正。
+
+---
 
 ## 3. 项目架构
 
-根目录核心文件：
+### 3.1 根目录核心文件
 
-| 文件/目录             | 职责                                                                       |
-| --------------------- | -------------------------------------------------------------------------- |
-| `manifest.json`       | SillyTavern 扩展清单。当前加载 `index.js` 和 `style.css`，版本号在这里维护 |
-| `index.js`            | 插件入口。只做 StoryOracleAPI 握手和动态导入 `src/plugin.js`               |
-| `style.css`           | 插件样式，包含大纲设置栏、消息编辑框、内联选择面板、最终模式字段等 UI 样式 |
-| `src/`                | 当前插件的全部业务代码                                                     |
-| `交接指南/`           | 原作者提供的 Hook API 迁移指南和示例插件材料                               |
-| `与原作者对接/`       | 早期 GAP 评估、Hook API 设计讨论和改造方案                                 |
-| `故事神谕本体1.21.0/` | 用于对照 Hook API 落地实现的故事神谕本体代码副本，不是本插件运行时打包内容 |
+| 文件 / 目录             | 职责                                                                       |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `manifest.json`         | SillyTavern 扩展清单。当前加载 `index.js` 和 `style.css`，版本号在这里维护 |
+| `index.js`              | 插件入口。只做 StoryOracleAPI 握手和动态导入 `src/plugin.js`               |
+| `style.css`             | 插件样式，包含大纲设置栏、消息编辑框、内联选择面板等 UI 样式               |
+| `src/`                  | 当前插件的全部业务代码                                                     |
+| `交接指南/`             | 原作者提供的 Hook API 迁移指南和示例插件材料                               |
+| `与原作者对接/`         | 早期 GAP 评估、Hook API 设计讨论和改造方案                                 |
+| `故事神谕本体1.22.0/`   | 用于对照 Hook API 落地实现的故事神谕本体代码副本，不是本插件运行时打包内容 |
 
-`src/` 模块分工：
+### 3.2 `src/` 模块分工
 
-| 文件                 | 职责                                                                                      |
-| -------------------- | ----------------------------------------------------------------------------------------- |
-| `plugin.js`          | 注册入口。校验 API 版本，注册大纲模式、回复动作、最终模式兼容层、删除确认                 |
-| `constants.js`       | Hook API 版本、localStorage key、默认系统提示词、默认大纲模板                             |
-| `prompt.js`          | 大纲模式 `onSend`。负责组合系统提示词、模板、角色卡、世界书、聊天记录，并返回模型请求消息 |
-| `ui.js`              | 大纲模式设置栏。负责模板选择、模板管理、补全预设开关、标签补充按钮                        |
-| `templates.js`       | 大纲模板的 localStorage 增删改查和当前模板选择                                            |
-| `tags.js`            | 从模板识别标签、从模型回复末尾提取标签内容、补全缺失标签                                  |
-| `message-actions.js` | 注册“注入剧情大纲”和“编辑”两个回复动作；编辑后调用 `api.updateReply()` 持久化             |
-| `outline-inject.js`  | 把大纲写入 TavernHelper 世界书 `<角色>-剧情指导`，必要时创建世界书或新条目                |
-| `final-mode.js`      | 最终模式兼容层。扩展本体连接设置和请求链路，是当前最大 Hook 例外                          |
-| `toast.js`           | 插件内提示消息。优先用 `toastr`，不可用时退回轻量 DOM toast                               |
+| 文件                    | 职责                                                                                      |
+| ----------------------- | ----------------------------------------------------------------------------------------- |
+| `plugin.js`             | 注册入口。校验 API 版本、迁移旧最终模式配置、注册大纲模式与回复动作                        |
+| `constants.js`          | Hook API 版本、localStorage key、默认系统提示词、默认大纲模板                              |
+| `prompt.js`             | 大纲模式 `onSend`。组合系统提示词、模板、角色卡、世界书、聊天记录，返回模型请求消息        |
+| `ui.js`                 | 大纲模式设置栏。模板选择、模板管理、补全预设开关、标签补充按钮                             |
+| `templates.js`          | 大纲模板的 localStorage 增删改查和当前模板选择                                             |
+| `tags.js`               | 从模板识别标签、从模型回复末尾提取标签内容、补全缺失标签                                   |
+| `message-actions.js`    | 注册「注入剧情大纲」和「编辑」两个回复动作；编辑后调 `api.updateReply()` 持久化            |
+| `outline-inject.js`     | 把大纲写入 TavernHelper 世界书 `<角色>-剧情指导`，必要时创建世界书或新条目                 |
+| `migrate-final-mode.js` | 一次性迁移：把停留在旧最终模式的用户配置搬到本体 1.22.0 原生 `directRawUrl` 开关上         |
+| `toast.js`              | 插件内提示消息。优先用 `toastr`，不可用时退回轻量 DOM toast                                |
 
-运行时加载顺序：
+### 3.3 运行时加载顺序
 
 1. SillyTavern 加载本插件 `index.js`。
 2. `index.js` 等待故事神谕本体暴露 `window.StoryOracleAPI` 或派发 `story-oracle-ready`。
 3. 握手成功后动态导入 `src/plugin.js`。
-4. `plugin.js` 校验 `api.isCompatible(1)`。
-5. 校验通过后调用 `api.registerMode({ id: 'outline', ... })` 注册大纲模式。
-6. 调用 `api.addMessageAction()` 注册回复按钮。
-7. 安装最终模式兼容层和删除确认逻辑。
+4. `plugin.js` 校验 `api.isCompatible(1)`，不通过则放弃挂载。
+5. 校验通过后调用 `migrateFinalModeState(api)`——仅旧最终模式用户触发一次，把配置搬到本体原生开关。
+6. 调用 `api.registerMode({ id: 'outline', ... })` 注册大纲模式。
+7. 调用 `api.addMessageAction()`（在 `registerMessageActions` 内）注册回复按钮。
+
+---
 
 ## 4. 本体与本插件的关系
 
-故事神谕本体和本插件现在是两个独立扩展，不应再合并打包。
+故事神谕本体和本插件是两个独立扩展，不应再合并打包。
 
-故事神谕本体负责：
+### 4.1 故事神谕本体负责
 
 - 提供主窗口、模式按钮区、消息列表、设置面板、连接配置、模型请求和回复渲染。
 - 暴露 `window.StoryOracleAPI` v1。
 - 维护稳定 Hook 契约：`registerMode`、`context.*`、`addMessageAction`、`updateReply`、`renderMarkdown`、`run`、`appendReply`、`data-so-raw` 等。
-- 原生处理交接指南中已经移入本体的功能，例如 Markdown 渲染、连接预设、参谋栏折叠、工具展开、切模式收设置、开发者请求日志等。
+- 原生处理交接指南中已移入本体的功能：Markdown 渲染、连接预设、参谋栏折叠、工具展开、切模式收设置、开发者请求日志等。
+- 1.22.0 起原生承载旧「最终模式」语义：直连区「地址原样使用（不自动补 /v1）」(`directRawUrl`) + 「经酒馆后端转发」(`directViaBackend`) 两个开关；连接预设保存 / 恢复 `rawUrl` 字段；删预设 / 删消息的二次确认经原生 `uiConfirm`。
 
-本插件负责：
+### 4.2 本插件负责
 
-- 注册“大纲”模式，并定义它的提示词构造方式。
+- 注册「大纲」模式，并定义它的提示词构造方式。
 - 管理大纲模板和模板选择。
-- 给故事神谕回复提供“注入剧情大纲”和“编辑”动作。
+- 给故事神谕回复提供「注入剧情大纲」和「编辑」动作。
 - 把模型输出的大纲写入当前角色的 `<角色>-剧情指导` 世界书。
-- 保留“最终模式”兼容层，解决部分服务商在直连和后端转发下 endpoint 规则不匹配的问题。
+- 启动时把停留在旧最终模式的用户配置一次性迁移到本体原生开关上（`migrate-final-mode.js`，仅旧用户触发一次）。
 
-边界原则：
+### 4.3 边界原则
 
 - 大纲模式相关逻辑优先走 `StoryOracleAPI`，不要再新增 `fetch` 拦截、prototype hack、直接改本体聊天数组之类的逻辑。
-- 写世界书属于 SillyTavern/TavernHelper 侧能力，不属于故事神谕本体 Hook 范围，可以继续放在插件内。
-- 最终模式是当前例外。任何新功能不要照搬 `final-mode.js` 的写法，除非确认 Hook API 没有可用入口且风险可接受。
+- 写世界书属于 SillyTavern / TavernHelper 侧能力，不属于故事神谕本体 Hook 范围，继续放在插件内。
+- 连接层（旧最终模式）一律走本体 1.22.0 原生 `directRawUrl` + `directViaBackend` 开关，本插件不再维护任何连接层补丁、`eval` patch 或 DOM patch。
+- 若未来确需读 / 改本体内部状态且正式接口覆盖不到，再评估是否用 `api.unsafe.eval`（非正式、无兼容承诺），并接受本体更新后跟着改的风险。**这是兜底，不是日常路径。**
+
+---
 
 ## 5. 后续维护应该如何下手
 
@@ -105,17 +134,19 @@
 优先按这个顺序验证：
 
 1. 本体是否仍暴露 `window.StoryOracleAPI`，且 `api.isCompatible(1)` 通过。
-2. 标题栏是否出现“大纲”按钮，进入/退出大纲模式是否正常。
+2. 标题栏是否出现「大纲」按钮，进入 / 退出大纲模式是否正常。
 3. 大纲发送是否正常，且世界书中 `<角色>-剧情指导` 没有被再次塞进大纲请求上下文。
-4. 回复是否保留 `data-so-raw`，自定义标签是否能被“注入剧情大纲”读取。
-5. “编辑”保存后刷新，修改是否仍存在。
-6. “标签补充”是否只修改最新一条助手回复并持久化。
-7. 最终模式是否还能显示字段、保存字段、获取模型、发送请求。
-8. 删除消息和删除连接预设是否仍弹出确认。
+4. 回复是否保留 `data-so-raw`，自定义标签是否能被「注入剧情大纲」读取。
+5. 「编辑」保存后刷新，修改是否仍存在。
+6. 「标签补充」是否只修改最新一条助手回复并持久化。
+7. 直连区「地址原样使用」+「经酒馆后端转发」两个开关是否能正常获取模型、发送请求。
+8. 删除消息和删除连接预设是否仍弹出确认（本体 1.22.0 原生 `uiConfirm`，插件不再拦截）。
 
-如果只有大纲模式坏了，先看 `src/plugin.js`、`src/prompt.js`、`src/message-actions.js`。
-如果只有注入世界书坏了，先看 `src/outline-inject.js` 和 TavernHelper API 是否变化。
-如果只有最终模式坏了，优先看 `src/final-mode.js`，不要先改大纲主链路。
+排查入口：
+
+- 只有大纲模式坏了 → 先看 `src/plugin.js`、`src/prompt.js`、`src/message-actions.js`。
+- 只有注入世界书坏了 → 先看 `src/outline-inject.js` 和 TavernHelper API 是否变化。
+- 旧最终模式用户升级后配置异常 → 先看 `src/migrate-final-mode.js` 的一次性迁移是否跑过；连接层行为本身由本体原生开关负责，不再有插件侧补丁可查。
 
 ### 5.2 修改大纲提示词或模板
 
@@ -123,13 +154,13 @@
 - 默认模板在 `src/constants.js` 的 `DEFAULT_TEMPLATE`。
 - 用户自建模板保存在 localStorage key `so_outline_templates`。
 - 当前选中模板保存在 localStorage key `so_outline_template_selected`。
-- 修改默认模板时要注意：已有用户 localStorage 中如果已经有 `default` 模板，不一定会自动覆盖成新默认值。
+- 修改默认模板时注意：已有用户 localStorage 中若已有 `default` 模板，不一定会自动覆盖成新默认值。
 
 ### 5.3 修改大纲请求上下文
 
 入口是 `src/prompt.js` 的 `buildOutlineSend(userText, ctx, api)`。
 
-当前请求结构是：
+当前请求结构：
 
 - system：默认系统提示词 + 可选补全预设 + 当前模板 + 角色卡 + 世界书 + 最近故事对话记录。
 - messages：只保留本轮用户输入 `[{ role: 'user', content: userText }]`。
@@ -139,15 +170,15 @@
 - 不要恢复旧版 `fetch` 拦截。
 - 不要直接调用本体私有的 `buildSystemPrompt`、`generateReply`、`stripReasoningTags`。
 - 需要故事上下文时优先使用 `api.context.*`。
-- `api.context.*` 返回未宏替换文本，最终仍应只在拼完后调用一次 `ctx.substituteParams()`。
+- `api.context.*` 返回未宏替换文本，最终只在拼完后调用一次 `ctx.substituteParams()`。
 
 ### 5.4 修改消息按钮或回复编辑
 
 入口是 `src/message-actions.js`。
 
-- 新增回复按钮时继续使用 `api.addMessageAction({ id, icon, title, onClick })`。
-- 需要读取模型原文时使用 `rawText` 或 `.so-content.dataset.soRaw`。
-- 需要修改某条回复时使用 `api.updateReply(msgEl, newText, { persist: true, render: 'markdown' })`。
+- 新增回复按钮继续用 `api.addMessageAction({ id, icon, title, onClick })`。
+- 读模型原文用 `rawText` 或 `.so-content.dataset.soRaw`。
+- 改某条回复用 `api.updateReply(msgEl, newText, { persist: true, render: 'markdown' })`。
 - 不要重新引入旧版 `data-original-content`、`innerHTML` setter 拦截或手动改本体 `convo`。
 
 ### 5.5 修改世界书注入
@@ -160,47 +191,56 @@
 2. 从 AI 回复末尾提取最后一个完整标签块。
 3. 获取当前角色名，目标世界书为 `<角色>-剧情指导`。
 4. 若没有条目则创建 `剧情指导`。
-5. 若已有条目，用户选择“新建条目”或“覆盖最新”。
+5. 若已有条目，用户选择「新建条目」或「覆盖最新」。
 6. 新建条目时会禁用旧剧情指导条目，创建 `剧情指导N`。
 
 这部分主要依赖 TavernHelper，而不是 StoryOracleAPI。排查问题时应先确认 TavernHelper 是否仍暴露 `getLorebookEntries`、`setLorebookEntries`、`createLorebookEntries`、`createLorebook`、`getCharWorldbookNames`、`rebindCharWorldbooks`。
 
-### 5.6 修改最终模式
+### 5.6 连接层（旧「最终模式」）归属说明
 
-入口是 `src/final-mode.js`。这是风险最高的文件。
+旧「最终模式」兼容层（`src/final-mode.js`）已在 1.5.0 整层删除。其语义由故事神谕本体 1.22.0 的两个直连开关原生承载，**本插件不再维护连接层逻辑**——本节是历史交代，不是维护入口。
 
-维护原则：
+- `settings.directRawUrl`（UI：「地址原样使用（不自动补 /v1）」）：裸地址不补 `/v1`，请求打到 `地址/chat/completions`、取模型打到 `地址/models`。本体在所有直连调用点统一走 `resolveEndpointUrl(s)` / `modelsUrl(s.endpoint, !!s.directRawUrl)`。
+- `settings.directViaBackend`（UI：「经酒馆后端转发」）：请求经酒馆服务器代发，绕开浏览器 CORS。
+- 连接预设由本体 `connPresetUpsert` 保存 `rawUrl` 字段，加载预设时恢复 `#so-raw-url` 复选框；旧预设缺省 `false` = 保存当时的行为。
 
-- 不要把最终模式的 patch 写法扩散到其它模块。
-- 修改前先明确本体对应函数是否仍存在，尤其是 `callDirect`、`streamDirect`、`streamDirectArc`、`normalizeUrl`、`modelsUrl`。
-- 同时验证直连模式、后端转发模式、最终模式三者，避免修最终模式时破坏原生直连。
-- 保持“UI/localStorage 保存原始地址，本体 settings 写入哨兵 URL”的设计，除非本体连接层已经提供正式 Hook。
-- 连接预设的唯一共享存储仍是本体 `settings.connPresets`。最终模式只在点击“保存/加载预设”时拦截按钮，把预设读写映射到 `#so-endpoint-final`、`#so-apikey-final`、`#so-model-final` 和 `so_final_mode_fields`；直连模式继续走本体原生按钮事件。
-- 最终模式保存预设时必须保存原始 endpoint，不要保存 `finalEndpointForClassic()` 生成的 `/chat/completions` 哨兵地址。否则直连/最终模式共用同一预设时会把内部兼容细节泄漏给用户配置。
-- 如果共享预设里的 endpoint 已经以 `/chat/completions` 结尾，最终模式获取模型列表时应转换到同级 `/models`，不要拼成 `/chat/completions/models`。
+唯一与本插件相关的连接层工作，是 `src/migrate-final-mode.js` 的一次性旧用户迁移。若旧最终模式用户升级后配置异常，按以下顺序排查：
 
-未来最好推动本体新增连接层 Hook，例如：
+1. `settings._useFinalMode` 是否已清（迁移是否跑过）。
+2. `#so-raw-url` 是否勾选、`#so-direct-backend` 是否勾选。
+3. `#so-endpoint` 是否显示干净原始地址（而非带 `/chat/completions` 的哨兵值）。
+4. localStorage `so_final_mode_fields` 是否已删（迁移完成会清掉）。
 
-- 注册自定义连接模式。
-- 给连接设置面板提供稳定 slot。
-- 自定义 endpoint normalize 规则。
-- 自定义模型列表获取逻辑。
-- 自定义 direct/backend request payload 生成逻辑。
+升级本体时验证：勾选「地址原样使用」+「经酒馆后端转发」后，获取模型与发送请求是否打到原样地址（DevTools Network 看 `/api/backends/chat-completions/...` 的 `custom_url`）。
 
-一旦这些能力进入 `StoryOracleAPI`，应优先删除 `final-mode.js` 中的 eval patch 和 DOM patch。
+---
 
 ## 6. 最小回归测试清单
 
 每次改动后至少手动跑一遍：
 
-- 只安装故事神谕本体 1.21.0+ 和本插件，不打包旧本体副本。
-- 打开故事神谕，确认“大纲”按钮出现。
+- 只安装故事神谕本体 1.22.0+ 和本插件，不打包旧本体副本。
+- 打开故事神谕，确认「大纲」按钮出现。
 - 进入大纲模式，选择模板，发送一次请求。
 - 确认回复 Markdown 正常、标签原文可被读取。
-- 点击“注入剧情大纲”，确认写入 `<角色>-剧情指导` 世界书。
-- 点击“编辑”，保存后刷新，确认编辑结果仍存在。
-- 点击“标签补充”，确认最新回复被补标签且刷新后仍存在。
-- 使用最终模式填写 endpoint/key/model，获取模型并发送一次请求。
-- 在直连模式保存一个连接预设，切到最终模式后确认同一个预设出现在下拉框，加载后最终模式字段被正确填入。
-- 在最终模式保存一个连接预设，切回直连模式后确认同一个预设出现在下拉框，加载后直连字段被正确填入；删除该预设后两个模式都不再显示。
-- 切回普通直连或配置文件模式，确认原本连接方式未被最终模式污染。
+- 点击「注入剧情大纲」，确认写入 `<角色>-剧情指导` 世界书。
+- 点击「编辑」，保存后刷新，确认编辑结果仍存在。
+- 点击「标签补充」，确认最新回复被补标签且刷新后仍存在。
+- 勾选直连区「地址原样使用」+「经酒馆后端转发」，填写 endpoint / key / model，获取模型并发送一次请求，确认打到原样地址。
+- 保存一个连接预设（含勾选「地址原样使用」），切换再加载，确认「地址原样使用」复选框正确恢复；删除该预设弹出本体原生确认框（只弹一次）。
+- 删除一条消息，弹出本体原生确认框（只弹一次）。
+- 取消勾选「地址原样使用」，发送请求，确认仍打到 `地址/v1/chat/completions`，未被原样开关污染。
+
+### 6.1 旧最终模式用户迁移验证（仅升级时跑一次）
+
+手动构造旧状态后刷新，确认迁移生效：
+
+- `settings._useFinalMode = true`
+- `settings.endpoint = https://host/path/chat/completions`（哨兵值）
+- localStorage `so_final_mode_fields = { endpoint: "https://host/path", apiKey: "sk-x", model: "m" }`
+
+刷新后预期：
+
+- `#so-endpoint` 显示 `https://host/path`（干净原始地址，无 `/chat/completions` 后缀）。
+- `#so-raw-url` 复选框勾选、`#so-direct-backend` 复选框勾选。
+- 控制台有迁移日志；`settings._useFinalMode` 已清；localStorage `so_final_mode_fields` 已删。
