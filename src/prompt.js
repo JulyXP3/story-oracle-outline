@@ -29,10 +29,14 @@ function getPresetSystemPrompt(api) {
 
 function getOutlineSystemPrompt(api) {
   const usePreset = !!document.getElementById('so-outline-use-preset')?.checked;
-  let basePrompt = OUTLINE_DEFAULT_SYSTEM_PROMPT;
+  const s = api.context.getSettings();
+  const outlinePrompt = (typeof s.outlineSystemPrompt === 'string' && s.outlineSystemPrompt.trim())
+    ? s.outlineSystemPrompt
+    : OUTLINE_DEFAULT_SYSTEM_PROMPT;
+  let basePrompt = outlinePrompt;
   if (usePreset) {
     const presetPrompt = getPresetSystemPrompt(api);
-    if (presetPrompt) basePrompt = presetPrompt + '\n\n' + OUTLINE_DEFAULT_SYSTEM_PROMPT;
+    if (presetPrompt) basePrompt = presetPrompt + '\n\n' + basePrompt;
   }
   const template = getTemplate(selectedTemplateId());
   return template && template.content ? basePrompt + '\n\n' + template.content : basePrompt;
@@ -142,5 +146,25 @@ export async function buildOutlineSend(userText, ctx, api) {
     }
   }
 
-  return { system, messages: [{ role: 'user', content: String(userText || '') }] };
+  return { system, messages: buildMessages(userText, api) };
+}
+
+function buildMessages(userText, api) {
+  const includeAllChat = document.getElementById('so-outline-include-all-chat')?.checked;
+  if (!includeAllChat || !api.unsafe || typeof api.unsafe.eval !== 'function') {
+    return [{ role: 'user', content: String(userText || '') }];
+  }
+  try {
+    const rounds = api.unsafe.eval(
+      '[...convo].filter(m => m && (m.role === "user" || m.role === "assistant")).slice(0, -1)'
+    );
+    if (Array.isArray(rounds) && rounds.length) {
+      const msgs = rounds.map(m => ({ role: m.role, content: m.content }));
+      msgs.push({ role: 'user', content: String(userText || '') });
+      return msgs;
+    }
+  } catch (e) {
+    console.warn(LOG_PREFIX + '通过unsafe.eval读取convo历史失败:', e);
+  }
+  return [{ role: 'user', content: String(userText || '') }];
 }

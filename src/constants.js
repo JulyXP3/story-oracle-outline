@@ -5,6 +5,7 @@ export const LOG_PREFIX = '[故事神谕·大纲版] ';
 export const REQUIRED_API_VERSION = 1;
 export const STORAGE_KEY = "so_outline_templates";
 export const SELECTED_TEMPLATE_KEY = "so_outline_template_selected";
+export const OUTLINE_INCLUDE_ALL_CHAT_KEY = "so_outline_include_all_chat";
 
 export const OUTLINE_DEFAULT_SYSTEM_PROMPT = `
 你是「故事神谕」的大纲模式助手，专门用于生成剧情大纲。信条：**人物决定剧情，非剧情驱动人物**。拒绝刻板印象、脸谱化、套路。人的复杂性——矛盾、犹豫、自我欺骗、隐秘动机——是好故事的根基。

@@ -2,7 +2,7 @@
 
 本文面向后续接手维护本仓库的人，说明当前插件相对《交接指南》中 Hook API 路线的符合情况、项目结构、本体与插件的边界，以及后续改动应该从哪里下手。
 
-> **版本基线**：本文对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁，本插件已**全部走 `StoryOracleAPI` 正式接口 + 本体原生开关**，不再依赖任何本体私有函数、闭包变量、`eval`、DOM patch 或事件拦截。
+> **版本基线**：本文最初对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁；后续为支持大纲系统提示词进入本体设置面板、发送全量大纲聊天记录、以及大纲模式独立聊天房间，重新引入少量 `api.unsafe.eval`。除 §2.3 明确列出的逃生阀外，主链路仍走 `StoryOracleAPI` 正式接口 + 本体原生开关。
 
 ---
 
@@ -23,7 +23,7 @@
 - **删除二次确认**（删预设 / 删消息）→ 本体 1.22.0 原生 `uiConfirm`。
 - **旧用户配置迁移** → `src/migrate-final-mode.js` 启动时一次性把停留在旧最终模式的配置搬到本体原生开关上。
 
-> 关于本体 1.22.0 新增的 `api.unsafe.eval(code)`：它是原作者提供的**非正式逃生阀**（模块作用域直接 `eval`，可读 / 改本体内部任意顶层绑定），但**不入版本契约、无兼容承诺**。本插件 1.5.0 **未使用**它——迁移落盘走的是正式接口 `api.context.getContext().saveSettingsDebounced()`。日常维护仍首选正式接口；`unsafe.eval` 只在正式接口确实覆盖不到、且能接受本体更新后跟着改的风险时才考虑。
+> 关于本体 1.22.0 新增的 `api.unsafe.eval(code)`：它是原作者提供的**非正式逃生阀**（模块作用域直接 `eval`，可读 / 改本体内部任意顶层绑定），但**不入版本契约、无兼容承诺**。日常维护仍首选正式接口；`unsafe.eval` 只在正式接口确实覆盖不到、且能接受本体更新后跟着改的风险时才考虑。**本插件已在下述场景使用它——见 §2.3。**
 
 ---
 
@@ -31,7 +31,7 @@
 
 交接指南的核心要求：不要依赖故事神谕本体的私有函数、闭包变量、未承诺 DOM 结构和请求链路；尽量只使用 `StoryOracleAPI` 暴露的稳定接口。
 
-**结论：1.5.0 起本插件没有违背 Hook 路线的地方。** 下方按「走 Hook API」和「Hook 之外但不算违背」两类列出，便于维护者快速定位。
+**结论：大纲主链路仍走 Hook API；少数本体设置 / 房间能力缺口走 §2.3 的 `api.unsafe.eval` 补丁。** 下方按「走 Hook API」「Hook 之外但不算违背」「unsafe.eval 逃生阀」三类列出，便于维护者快速定位。
 
 ### 2.1 走 `StoryOracleAPI` 正式接口的模块
 
@@ -52,6 +52,23 @@
 | `src/outline-inject.js` | 用 TavernHelper 写入 `<角色>-剧情指导` 世界书                                                                          | SillyTavern / TavernHelper 侧能力，交接指南已明确该文件与故事神谕本体无关                          | 保留。TavernHelper API 变化时再跟进                                                                                  |
 | `src/prompt.js`      | 调 `api.context.buildWorldInfo({ excludeBooks })` 后，仍用 `ctx.loadWorldInfo` / `TavernHelper.getLorebookEntries` 兜底剔除「剧情指导」 | 外部依赖（ST / TavernHelper）+ 双保险逻辑，**不是**本体私有函数依赖                                | 可保留。它解决不同环境里 `excludeBooks` 可能未完全剔除的兼容问题。若确认本体 1.21+ 的 `excludeBooks` 稳定可靠，可简化掉兜底剔除 |
 | `src/templates.js`   | 用 localStorage 保存大纲模板                                                                                               | 插件自有状态，不依赖本体                                                                           | 保留                                                                                                                  |
+
+### 2.3 `api.unsafe.eval` 逃生阀使用记录
+
+以下功能因 Hook API v1 未覆盖对应能力，走 `api.unsafe.eval` 直接操作本体模块作用域。**本体更新后这些调用可能失效，维护时优先关注此处。**
+
+| 功能                  | 位置              | unsafe.eval 操作                                                                                                                                               | 替代方案（如果 Hook API 未来支持）                                                        | 失效后果                         |
+| --------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------------------- |
+| 大纲系统提示词注入设置面板 | `src/plugin.js` `injectOutlineSysPrompt()` | 向本体 `SYSPROMPT_MODES` 数组 push `{ id:'outline', key:'outlineSystemPrompt', ... }`；设 `defaults.outlineSystemPrompt = ''`；往 `#so-sysprompt-which` 下拉框补选项 | Hook API 新增 `api.registerSysPromptMode(id, label, builtin)`                             | 设置面板下拉框无"大纲"选项，用户无法在设置里编辑大纲提示词。插件退化为只使用内置默认提示词 |
+| 发送全量大纲聊天记录 | `src/prompt.js` `buildMessages()` | 当用户勾选"发送全量大纲聊天记录"时，读本体模块作用域的 `convo` 数组，过滤 `user`/`assistant` 轮次，排除最新一条（即当前输入），拼入 `messages` | Hook API 新增 `api.getConversation()` 或 `registerMode` 支持 `historyMode: true`（本体已预留字段但未实现） | 勾选框无效，相当于没勾，退化为只发当前 user 消息 |
+| 大纲模式独立聊天房间 | `src/plugin.js` `injectOutlineModeRoom()` / `syncOutlineModeRoom()` | 包装本体 `convoStreamKeyForMode(mode, s)`：`mode === 'outline'` 时返回 `'outline'`；进入大纲模式时额外调用本体 `syncConvoStream()` 完成实际换房 | `registerMode` 支持 `streamKey: 'outline'`，并在本体 `toggleRegisteredMode()` 设定 `activeRegisteredModeId` 后自动同步房间 | 大纲模式继续落在 `main` 流，和普通聊天共用 `storyOracle_convo` |
+
+**排查要点：**
+- 若设置面板下拉框缺少「大纲」→ 检查 `SYSPROMPT_MODES` 是否改名 / 移出模块顶层（如变成 `let` 或移到函数内）
+- 若编辑后发送不生效 → 检查 defaults 对象的 `outlineSystemPrompt` key 是否被本体覆盖（如 `Object.assign` 重置了 defaults）
+- 本体未来若把 `SYSPROMPT_MODES` 改为函数返回 / Map 结构 / 移出模块作用域，本表所有调用需同步改动
+- 若「发送全量大纲聊天记录」勾选后无效 → 检查本体 `convo` 变量是否改名、是否仍为模块顶层变量（如改为 `let convo` 仍可读，若移入函数作用域则 unsafe.eval 无法访问）
+- 若大纲模式仍和普通聊天共用记录 → 检查 `convoStreamKeyForMode` 是否改名、是否仍可重赋值；再检查 `syncConvoStream()` 是否改名、注册模式 `onEnter` 是否仍在 `activeRegisteredModeId = id` 后执行；最后检查本体是否改了房间 key 生成规则 `convoMetaKeyFor()`
 
 > ⚠️ 注意：旧版文档曾把 `src/prompt.js` 的兜底剔除列为「违背 Hook 路线」，那是旧 `final-mode.js` 时代风险表里的归类错误——它既不是本体私有函数，也不是 `eval`，本就不属于「违背故事神谕 Hook 路线」范畴。1.5.0 文档已更正。
 
@@ -120,10 +137,10 @@
 
 ### 4.3 边界原则
 
-- 大纲模式相关逻辑优先走 `StoryOracleAPI`，不要再新增 `fetch` 拦截、prototype hack、直接改本体聊天数组之类的逻辑。
+- 大纲模式相关逻辑优先走 `StoryOracleAPI`，不要再新增 `fetch` 拦截、prototype hack、直接改本体聊天数组之类的逻辑；已存在的本体补丁只限 §2.3 列出的 `api.unsafe.eval`。
 - 写世界书属于 SillyTavern / TavernHelper 侧能力，不属于故事神谕本体 Hook 范围，继续放在插件内。
 - 连接层（旧最终模式）一律走本体 1.22.0 原生 `directRawUrl` + `directViaBackend` 开关，本插件不再维护任何连接层补丁、`eval` patch 或 DOM patch。
-- 若未来确需读 / 改本体内部状态且正式接口覆盖不到，再评估是否用 `api.unsafe.eval`（非正式、无兼容承诺），并接受本体更新后跟着改的风险。**这是兜底，不是日常路径。**
+- 若未来确需新增读 / 改本体内部状态，先评估能否请求本体补 Hook API；确实覆盖不到时才用 `api.unsafe.eval`（非正式、无兼容承诺），并必须写入 §2.3。**这是兜底，不是日常路径。**
 
 ---
 

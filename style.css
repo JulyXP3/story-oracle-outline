@@ -73,8 +73,15 @@
   gap: 8px;
   align-items: center;
 }
+.so-outline-template-row {
+  justify-content: space-between;
+}
 .so-outline-row .so-checkbox-field {
   flex: 1;
+}
+.so-outline-row .so-outline-compact-check {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .so-checkbox-field {
@@ -114,12 +121,21 @@
   margin-right: 6px;
 }
 
+/* 管理模板 / 标签补充按钮——样式对齐参谋模式"新建弧线" */
+.so-outline-mini-btn {
+  cursor: pointer;
+  padding: 3px 9px;
+  border-radius: 7px;
+  font-family: inherit;
+  font-size: 0.76em;
+  color: var(--SmartThemeBodyColor, #e6e6e6);
+  background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+  border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
+}
+.so-outline-mini-btn:hover { filter: brightness(1.15); }
+
 #so-outline-fix-tags {
-  padding: 6px 10px;
-  font-size: 0.85em;
   white-space: nowrap;
-  height: fit-content;
-  align-self: center;
 }
 
 #so-outline-template-form {
@@ -215,8 +231,19 @@
 
 @media (max-width: 600px) {
   .so-outline-row {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
+  }
+  .so-outline-action-row .so-checkbox-field {
+    min-width: 0;
+  }
+  .so-outline-action-row .so-checkbox-field span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .so-outline-template-row .so-outline-compact-check {
+    align-self: center;
   }
   #so-outline-template-form textarea {
     min-height: 100px;

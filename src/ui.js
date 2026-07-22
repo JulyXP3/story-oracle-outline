@@ -2,6 +2,7 @@
 // 作用：填充 registerMode 提供的 buildBar 容器，渲染模板选择、模板管理、补全预设开关和标签补充按钮。
 import { addTemplate, deleteTemplate, getTemplates, saveSelectedTemplate, selectedTemplateId, updateTemplate } from './templates.js';
 import { handleTagFix } from './message-actions.js';
+import { OUTLINE_INCLUDE_ALL_CHAT_KEY } from './constants.js';
 
 function refreshTemplateSelector() {
   const select = document.getElementById('so-outline-template-select');
@@ -151,13 +152,24 @@ export function buildOutlineBar(barEl, api) {
   barEl.innerHTML =
     '<div class="so-outline-template-selector">' +
     '<label class="so-field"><span>大纲模板预设</span><select id="so-outline-template-select"><option value="default">默认模板</option></select></label>' +
-    '<button type="button" class="so-fix-run-btn" id="so-outline-template-manage" style="align-self:flex-start;margin-top:0;"><i class="fa-solid fa-pen-to-square"></i> 管理模板</button>' +
+    '<div class="so-outline-row so-outline-template-row">' +
+    '<button type="button" class="so-outline-mini-btn" id="so-outline-template-manage"><i class="fa-solid fa-pen-to-square"></i> 管理模板</button>' +
+    '<label class="so-checkbox-field so-outline-compact-check"><input type="checkbox" id="so-outline-include-all-chat"><span>发送全量大纲聊天记录</span></label>' +
+    '</div>' +
     '<div id="so-outline-template-form" style="display:none"></div>' +
-    '<div class="so-outline-row">' +
+    '<div class="so-outline-row so-outline-action-row">' +
     '<label class="so-checkbox-field"><input type="checkbox" id="so-outline-use-preset"><span>套用补全预设(跟参谋模式同理)</span></label>' +
-    '<button type="button" class="so-btn-secondary" id="so-outline-fix-tags" title="为AI回复补充或修正标签"><i class="fa-solid fa-tags"></i> 标签补充(仅限最新一楼)</button>' +
-    '</div></div>';
+    '<button type="button" class="so-outline-mini-btn" id="so-outline-fix-tags" title="为AI回复补充或修正标签"><i class="fa-solid fa-tags"></i> 标签补充(仅限最新一楼)</button>' +
+    '</div>' +
+    '</div>';
   initTemplateManager();
+  const includeAllCheckbox = barEl.querySelector('#so-outline-include-all-chat');
+  if (includeAllCheckbox) {
+    try { includeAllCheckbox.checked = localStorage.getItem(OUTLINE_INCLUDE_ALL_CHAT_KEY) === 'true'; } catch (e) { /* ignore */ }
+    includeAllCheckbox.addEventListener('change', () => {
+      try { localStorage.setItem(OUTLINE_INCLUDE_ALL_CHAT_KEY, includeAllCheckbox.checked); } catch (e) { /* ignore */ }
+    });
+  }
   const fixBtn = barEl.querySelector('#so-outline-fix-tags');
   if (fixBtn) fixBtn.addEventListener('click', () => handleTagFix(api));
 }
