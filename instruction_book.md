@@ -51,6 +51,7 @@
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `src/outline-inject.js` | 用 TavernHelper 写入 `<角色>-剧情指导` 世界书                                                                          | SillyTavern / TavernHelper 侧能力，交接指南已明确该文件与故事神谕本体无关                          | 保留。TavernHelper API 变化时再跟进                                                                                  |
 | `src/prompt.js`      | 调 `api.context.buildWorldInfo({ excludeBooks })` 后，仍用 `ctx.loadWorldInfo` / `TavernHelper.getLorebookEntries` 兜底剔除「剧情指导」 | 外部依赖（ST / TavernHelper）+ 双保险逻辑，**不是**本体私有函数依赖                                | 可保留。它解决不同环境里 `excludeBooks` 可能未完全剔除的兼容问题。若确认本体 1.21+ 的 `excludeBooks` 稳定可靠，可简化掉兜底剔除 |
+| `src/prompt.js`      | 走 MVU 框架公开 API（`window.Mvu` / TavernHelper `waitGlobalInitialized('Mvu')` → `Mvu.getMvuData`）读取 stat_data | 外部依赖（酒馆助手 MVU 框架），与本体参谋模式同源；**不是**本体私有函数，不用 unsafe.eval          | 保留。本体 1.77.x 只在内置模式抓变量（`generateReply` :25687 把注册插件模式排除在 `chatStatData` 外），插件侧走公开通道补齐；MVU API 变化时跟进 |
 | `src/templates.js`   | 用 localStorage 保存大纲模板                                                                                               | 插件自有状态，不依赖本体                                                                           | 保留                                                                                                                  |
 
 ### 2.3 `api.unsafe.eval` 逃生阀使用记录
@@ -179,7 +180,7 @@
 
 当前请求结构：
 
-- system：默认系统提示词 + 可选补全预设 + 当前模板 + 角色卡 + 世界书 + 最近故事对话记录。
+- system：默认系统提示词 + 可选补全预设 + 当前模板 + 角色卡 + MVU 变量状态（跟随本体「带上实时变量状态」开关，非 MVU 卡整段省略）+ 世界书 + 最近故事对话记录。
 - messages：只保留本轮用户输入 `[{ role: 'user', content: userText }]`。
 
 维护时注意：

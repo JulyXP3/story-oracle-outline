@@ -27,6 +27,31 @@ function getPresetSystemPrompt(api) {
   return null;
 }
 
+// MVU（MagVarUpdate 变量框架）公开 API 读取当前 stat_data——与本体参谋模式同源（本体 getMvuStatData
+// 底层就是 Mvu.getMvuData）。走公开通道，不经本体、不用 unsafe.eval；非 MVU 卡静默返回空串。
+async function loadMvuStatSection() {
+  try {
+    const pwin = window.parent || window;
+    const th = pwin.TavernHelper || window.TavernHelper;
+    let Mvu = pwin.Mvu || window.Mvu || null;
+    if (!Mvu && th && typeof th.waitGlobalInitialized === 'function') {
+      // MVU 框架可能比插件晚就绪：等它全局初始化，最多 5 秒（与本体 getMvu 同款超时）。
+      Mvu = await Promise.race([
+        th.waitGlobalInitialized('Mvu'),
+        new Promise((resolve, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+      ]).catch(() => null);
+    }
+    if (!Mvu || typeof Mvu.getMvuData !== 'function') return '';
+    const data = Mvu.getMvuData({ type: 'message', message_id: 'latest' });
+    // 少数卡把变量摊在 MvuData 顶层而没有 stat_data —— 与本体 diagStatOf 同口径退回整份。
+    const stat = (data && data.stat_data) ? data.stat_data : (data ?? null);
+    return stat ? JSON.stringify(stat, null, 2) : '';
+  } catch (e) {
+    console.warn(LOG_PREFIX + '读取 MVU 变量状态失败（视为无 MVU）:', e);
+    return '';
+  }
+}
+
 function getOutlineSystemPrompt(api) {
   const usePreset = !!document.getElementById('so-outline-use-preset')?.checked;
   const s = api.context.getSettings();
@@ -118,6 +143,15 @@ export async function buildOutlineSend(userText, ctx, api) {
     }
   } catch (e) {
     console.warn(LOG_PREFIX + '构建角色卡上下文失败:', e);
+  }
+
+  try {
+    if (!settings || settings.chatIncludeStat !== false) {
+      const stat = await loadMvuStatSection();
+      if (stat) parts.push('=== 当前变量状态（stat_data，来自 MVU —— 剧情推进到此刻的实时数值）===\n' + stat);
+    }
+  } catch (e) {
+    console.warn(LOG_PREFIX + '构建变量状态上下文失败:', e);
   }
 
   try {
