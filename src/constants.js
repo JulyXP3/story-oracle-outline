@@ -6,6 +6,13 @@ export const REQUIRED_API_VERSION = 1;
 export const STORAGE_KEY = "so_outline_templates";
 export const SELECTED_TEMPLATE_KEY = "so_outline_template_selected";
 export const OUTLINE_INCLUDE_ALL_CHAT_KEY = "so_outline_include_all_chat";
+// 服务端存储（层 1）：user/files/ 下模板文件的统一文件名前缀，以及酒馆
+// extensionSettings 里的索引 key（存 [{id, name, url}]，正文在文件里）。
+// 索引同时在 user/files/ 落一份自己的 JSON 文件：settings.json 是整文件覆盖式保存，
+// 其他开着的旧酒馆标签页保存设置会把索引冲掉，索引文件只有本插件会写，以此为准。
+export const TEMPLATE_SERVER_FILE_PREFIX = "so-outline-tpl-";
+export const TEMPLATE_SERVER_INDEX_KEY = "storyOracleOutlineTemplates";
+export const TEMPLATE_SERVER_INDEX_FILE = "so-outline-tpl-index.json";
 
 export const OUTLINE_DEFAULT_SYSTEM_PROMPT = `
 你是「故事神谕」的大纲模式助手，专门用于生成剧情大纲。信条：**人物决定剧情，非剧情驱动人物**。拒绝刻板印象、脸谱化、套路。人的复杂性——矛盾、犹豫、自我欺骗、隐秘动机——是好故事的根基。

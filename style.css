@@ -133,6 +133,11 @@
   border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
 }
 .so-outline-mini-btn:hover { filter: brightness(1.15); }
+.so-outline-mini-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: none;
+}
 
 #so-outline-fix-tags {
   white-space: nowrap;
@@ -169,25 +174,12 @@
   font-size: 0.85em;
 }
 
+/* 模板管理表单操作行：五个小按钮（新建/保存/删除/导入/导出）同款紧凑样式，手机端允许换行。 */
 .so-outline-template-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-}
-.so-outline-template-actions .so-fix-run-btn {
-  flex: 1;
-  margin-top: 0;
-  text-align: center;
-}
-.so-outline-template-actions .so-btn-danger {
-  background: rgba(220, 38, 38, 0.2);
-  border-color: rgba(220, 38, 38, 0.4);
-}
-.so-outline-template-actions .so-btn-danger:hover {
-  background: rgba(220, 38, 38, 0.3);
-}
-.so-outline-template-actions .so-btn-danger:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  margin-top: 4px;
 }
 
 .so-inline-choice-panel {

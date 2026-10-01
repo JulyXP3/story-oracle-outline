@@ -3,10 +3,11 @@
 // 这里只编排模块，不承载具体业务实现。
 import { LOG_PREFIX, OUTLINE_DEFAULT_SYSTEM_PROMPT, REQUIRED_API_VERSION } from './constants.js';
 import { buildOutlineSend } from './prompt.js';
-import { buildOutlineBar } from './ui.js';
+import { buildOutlineBar, refreshOutlineBarTemplates } from './ui.js';
 import { registerMessageActions } from './message-actions.js';
 import { setStoryOracleApi } from './outline-inject.js';
 import { migrateFinalModeState } from './migrate-final-mode.js';
+import { initTemplateStorage } from './storage.js';
 
 export function registerOutlinePlugin(api) {
   setStoryOracleApi(api);
@@ -14,6 +15,10 @@ export function registerOutlinePlugin(api) {
     console.warn(LOG_PREFIX + '需要 Story Oracle Hook API v' + REQUIRED_API_VERSION + '，当前为 v' + (api && api.version) + '，跳过挂载。');
     return;
   }
+
+  // 模板存储初始化（服务端文件 / IndexedDB / localStorage 三层）：不阻塞挂载，
+  // 后台探测层级并迁移旧 localStorage 模板；初始化完成前读接口回落 localStorage 快照。
+  initTemplateStorage().catch((e) => console.warn(LOG_PREFIX + '模板存储初始化异常:', e));
 
   // 一次性迁移：把停留在旧最终模式的用户配置搬到本体 1.22.0 原生 directRawUrl 开关上。
   // 必须在 registerMode 之前跑——它只改本体 settings，与大纲模式注册无依赖，但越早还原连接配置越好。
@@ -92,6 +97,8 @@ function injectOutlineModeRoom(api) {
 }
 
 function syncOutlineModeRoom(api) {
+  // 进入大纲模式时 bar 已挂载可见：兜底刷新模板下拉（覆盖存储异步初始化晚于 bar 构建的情况）。
+  try { refreshOutlineBarTemplates(); } catch (e) { /* ignore */ }
   if (!api.unsafe || typeof api.unsafe.eval !== 'function') return;
   try {
     api.unsafe.eval('syncConvoStream()');

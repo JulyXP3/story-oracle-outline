@@ -13,8 +13,43 @@
 
 原discord帖子链接: [故事神谕帖子](https://discord.com/channels/1134557553011998840/1512227308612620389)
 
+## 大纲模板存储说明（1.6.0+）
+
+### 存储在哪（三层，自动选择）
+
+| 层级 | 存储路径 | 说明 |
+| --- | --- | --- |
+| 1. 服务端（主） | 模板正文：酒馆数据目录下 `data/<用户>/user/files/so-outline-tpl-*.txt`；列表索引：同目录 `so-outline-tpl-index.json`（权威来源），并镜像一份到 `data/<用户>/settings.json` 的 `extensionSettings.storyOracleOutlineTemplates` | 走酒馆官方 `/api/files` 接口（与 Data Bank 附件同款），不消耗 token；换浏览器 / 多端访问同一酒馆都能用 |
+| 2. 本浏览器（降级） | 浏览器 IndexedDB，库名 `story_oracle_outline` | 服务端不可用时自动切到这里 |
+| 3. localStorage（兜底） | 浏览器 localStorage，key `so_outline_templates`（旧版 key，永远保留不删） | 最终兜底；平时也会同步写一份快照，超过 5MB 时静默跳过 |
+
+> 为什么索引要存两份：酒馆的 settings.json 是整文件覆盖式保存——如果还开着别的旧酒馆标签页/窗口，它保存设置时会把索引从 settings.json 里冲掉。索引文件（`so-outline-tpl-index.json`）只有本插件会写，启动时以它为准；发现 settings 副本丢失时会自动从索引文件恢复。
+
+### 降级方案
+
+服务端写入/读取失败（云酒馆禁用 `/api/files`、断网、酒馆版本过旧等）时：**服务端 → IndexedDB → localStorage** 逐级自动降级，每个会话只弹一次提示。服务端恢复后的下次启动，会把本地独有的模板自动补传回服务端。
+
+### 如何删除大纲模板
+
+- **常规删除（推荐）**：「管理模板」→ 选中模板 →「删除」。会同步清理服务端 `user/files/` 下对应的 .txt 文件并更新索引，不留孤儿文件。
+- **手动删除**（插件无法打开时的兜底，按层清理）：
+  1. 服务端层：删除酒馆数据目录 `data/<用户>/user/files/` 下所有 `so-outline-tpl-` 开头的文件（含 `so-outline-tpl-index.json` 索引文件），并把 `data/<用户>/settings.json` 中 `extensionSettings.storyOracleOutlineTemplates` 改为 `[]`（建议改前先关闭酒馆进程）。
+  2. 浏览器层：浏览器 DevTools → Application(应用) → IndexedDB → 删除 `story_oracle_outline` 库；再在 Local Storage 中删除 `so_outline_templates` 这个 key。刷新页面即生效。
 
 
+
+
+## 2026-10-01
+```
+1. 新增: 大纲模板存储升级——模板正文经酒馆官方 /api/files 接口存到服务端 user/files/ 目录（与 Data Bank 附件同款通道）, 列表索引进酒馆 extensionSettings; 不消耗 token, 模板跟随酒馆数据目录, 几 MB 大模板不再受 localStorage 5MB 限制
+2. 新增: 服务端不可用时自动三层降级: 服务端文件 → IndexedDB(本浏览器) → localStorage(旧行为); 降级时提示一次, 恢复后自动把本地独有模板补传服务端
+3. 新增: 旧 localStorage 模板启动时自动迁移到新存储, 旧 key 保留不删作为兜底备份
+4. 新增: 管理模板表单内新增「导入模板」「导出模板」按钮: 导入支持一次多选 .txt（文件名=模板名, 全文=模板内容, 重名自动加后缀不覆盖）, 导出当前选中模板为 .txt, 导出的文件可直接再导入
+5. 优化: 新建/保存/删除/导入/导出五个操作统一为「标签补充」同款小按钮样式并合并为一行, 手机端自动换行
+6. 修复: 删除模板 / 重命名模板时同步清理服务端 user/files/ 下的旧 .txt 文件, 不再残留孤儿文件
+7. 优化: 模板读接口改为内存缓存同步读, 存储初始化后台进行, UI 与发送链路零等待
+8. 维护: 实机通过 CRUD / 导入导出 / 三层降级链路(服务端→IndexedDB→localStorage→恢复补传)全套测试; 核对故事神谕本体 1.89.0 兼容性: Hook API 与三处 unsafe.eval 落点全部不变, 完全兼容
+```
 
 ## 2026-09-11
 ```

@@ -2,7 +2,7 @@
 
 本文面向后续接手维护本仓库的人，说明当前插件相对《交接指南》中 Hook API 路线的符合情况、项目结构、本体与插件的边界，以及后续改动应该从哪里下手。
 
-> **版本基线**：本文最初对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁；后续为支持大纲系统提示词进入本体设置面板、发送全量大纲聊天记录、以及大纲模式独立聊天房间，重新引入少量 `api.unsafe.eval`。除 §2.3 明确列出的逃生阀外，主链路仍走 `StoryOracleAPI` 正式接口 + 本体原生开关。
+> **版本基线**：本文最初对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁；后续为支持大纲系统提示词进入本体设置面板、发送全量大纲聊天记录、以及大纲模式独立聊天房间，重新引入少量 `api.unsafe.eval`。1.6.0（2026-10-01）把大纲模板持久化从 localStorage 升级为三层存储（服务端文件 / IndexedDB / localStorage，见 §5.7），并核对本体 1.89.0 兼容性（Hook API 与 §2.3 落点全部不变）。除 §2.3 明确列出的逃生阀外，主链路仍走 `StoryOracleAPI` 正式接口 + 本体原生开关。
 
 ---
 
@@ -52,7 +52,7 @@
 | `src/outline-inject.js` | 用 TavernHelper 写入 `<角色>-剧情指导` 世界书                                                                          | SillyTavern / TavernHelper 侧能力，交接指南已明确该文件与故事神谕本体无关                          | 保留。TavernHelper API 变化时再跟进                                                                                  |
 | `src/prompt.js`      | 调 `api.context.buildWorldInfo({ excludeBooks })` 后，仍用 `ctx.loadWorldInfo` / `TavernHelper.getLorebookEntries` 兜底剔除「剧情指导」 | 外部依赖（ST / TavernHelper）+ 双保险逻辑，**不是**本体私有函数依赖                                | 可保留。它解决不同环境里 `excludeBooks` 可能未完全剔除的兼容问题。若确认本体 1.21+ 的 `excludeBooks` 稳定可靠，可简化掉兜底剔除 |
 | `src/prompt.js`      | 走 MVU 框架公开 API（`window.Mvu` / TavernHelper `waitGlobalInitialized('Mvu')` → `Mvu.getMvuData`）读取 stat_data | 外部依赖（酒馆助手 MVU 框架），与本体参谋模式同源；**不是**本体私有函数，不用 unsafe.eval          | 保留。本体 1.77.x 只在内置模式抓变量（`generateReply` :25687 把注册插件模式排除在 `chatStatData` 外），插件侧走公开通道补齐；MVU API 变化时跟进 |
-| `src/templates.js`   | 用 localStorage 保存大纲模板                                                                                               | 插件自有状态，不依赖本体                                                                           | 保留                                                                                                                  |
+| `src/templates.js`   | 模板正文/列表持久化走 `src/storage.js` 三层存储（服务端文件 / IndexedDB / localStorage），详见 §5.7；不依赖本体 | 插件自有状态 + 酒馆公开接口（`/api/files`、`SillyTavern.getContext()`）                            | 保留。酒馆 `/api/files` 行为变化时跟进                                                                                              |
 
 ### 2.3 `api.unsafe.eval` 逃生阀使用记录
 
@@ -85,19 +85,21 @@
 | `index.js`              | 插件入口。只做 StoryOracleAPI 握手和动态导入 `src/plugin.js`               |
 | `style.css`             | 插件样式，包含大纲设置栏、消息编辑框、内联选择面板等 UI 样式               |
 | `src/`                  | 当前插件的全部业务代码                                                     |
-| `交接指南/`             | 原作者提供的 Hook API 迁移指南和示例插件材料                               |
-| `与原作者对接/`         | 早期 GAP 评估、Hook API 设计讨论和改造方案                                 |
-| `故事神谕本体1.22.0/`   | 用于对照 Hook API 落地实现的故事神谕本体代码副本，不是本插件运行时打包内容 |
+| `交接指南/`             | 原作者提供的 Hook API 迁移指南和示例插件材料（已 gitignore，不入库）       |
+| `与原作者对接/`         | 早期 GAP 评估、Hook API 设计讨论和改造方案（已 gitignore，不入库）         |
+| `故事神谕本体最新版/`   | 用于对照的本体代码副本（当前 1.89.0，已 gitignore，不入库，非运行时打包内容） |
 
 ### 3.2 `src/` 模块分工
 
 | 文件                    | 职责                                                                                      |
 | ----------------------- | ----------------------------------------------------------------------------------------- |
-| `plugin.js`             | 注册入口。校验 API 版本、迁移旧最终模式配置、注册大纲模式与回复动作                        |
-| `constants.js`          | Hook API 版本、localStorage key、默认系统提示词、默认大纲模板                              |
+| `plugin.js`             | 注册入口。校验 API 版本、初始化模板三层存储、迁移旧最终模式配置、注册大纲模式与回复动作    |
+| `constants.js`          | Hook API 版本、localStorage key、服务端存储 key/文件名前缀、默认系统提示词、默认大纲模板  |
 | `prompt.js`             | 大纲模式 `onSend`。组合系统提示词、模板、角色卡、世界书、聊天记录，返回模型请求消息        |
-| `ui.js`                 | 大纲模式设置栏。模板选择、模板管理、补全预设开关、标签补充按钮                             |
-| `templates.js`          | 大纲模板的 localStorage 增删改查和当前模板选择                                             |
+| `ui.js`                 | 大纲模式设置栏。模板选择、模板管理（含导入/导出）、补全预设开关、标签补充按钮              |
+| `templates.js`          | 大纲模板增删改查和当前模板选择；持久化委托 `storage.js`，对外保持同步读内存缓存            |
+| `storage.js`            | 模板三层存储：服务端 `/api/files` 文件 + extensionSettings 索引 → IndexedDB → localStorage；含旧数据迁移与降级 |
+| `template-io.js`        | 模板 .txt 导入（多选）与导出（当前选中模板）                                              |
 | `tags.js`               | 从模板识别标签、从模型回复末尾提取标签内容、补全缺失标签                                   |
 | `message-actions.js`    | 注册「注入剧情大纲」和「编辑」两个回复动作；编辑后调 `api.updateReply()` 持久化            |
 | `outline-inject.js`     | 把大纲写入 TavernHelper 世界书 `<角色>-剧情指导`，必要时创建世界书或新条目                 |
@@ -110,9 +112,10 @@
 2. `index.js` 等待故事神谕本体暴露 `window.StoryOracleAPI` 或派发 `story-oracle-ready`。
 3. 握手成功后动态导入 `src/plugin.js`。
 4. `plugin.js` 校验 `api.isCompatible(1)`，不通过则放弃挂载。
-5. 校验通过后调用 `migrateFinalModeState(api)`——仅旧最终模式用户触发一次，把配置搬到本体原生开关。
-6. 调用 `api.registerMode({ id: 'outline', ... })` 注册大纲模式。
-7. 调用 `api.addMessageAction()`（在 `registerMessageActions` 内）注册回复按钮。
+5. 校验通过后后台调用 `initTemplateStorage()`（不阻塞挂载）——探测模板存储层级并迁移旧 localStorage 模板，见 §5.7。
+6. 调用 `migrateFinalModeState(api)`——仅旧最终模式用户触发一次，把配置搬到本体原生开关。
+7. 调用 `api.registerMode({ id: 'outline', ... })` 注册大纲模式。
+8. 调用 `api.addMessageAction()`（在 `registerMessageActions` 内）注册回复按钮。
 
 ---
 
@@ -170,9 +173,9 @@
 
 - 默认系统提示词在 `src/constants.js` 的 `OUTLINE_DEFAULT_SYSTEM_PROMPT`。
 - 默认模板在 `src/constants.js` 的 `DEFAULT_TEMPLATE`。
-- 用户自建模板保存在 localStorage key `so_outline_templates`。
+- 用户自建模板的持久化见 §5.7（三层存储；旧 localStorage key `so_outline_templates` 保留作兜底）。
 - 当前选中模板保存在 localStorage key `so_outline_template_selected`。
-- 修改默认模板时注意：已有用户 localStorage 中若已有 `default` 模板，不一定会自动覆盖成新默认值。
+- 修改默认模板时注意：存储层若已存在 `default` 模板，不会自动覆盖成新默认值；仅当缓存中缺 `default` 时由存储层补回。
 
 ### 5.3 修改大纲请求上下文
 
@@ -181,7 +184,7 @@
 当前请求结构：
 
 - system：默认系统提示词 + 可选补全预设 + 当前模板 + 角色卡 + MVU 变量状态（跟随本体「带上实时变量状态」开关，非 MVU 卡整段省略）+ 世界书 + 最近故事对话记录。
-- messages：只保留本轮用户输入 `[{ role: 'user', content: userText }]`。
+- messages：默认只保留本轮用户输入 `[{ role: 'user', content: userText }]`；勾选「发送全量大纲聊天记录」时会拼入大纲房间的历史轮次（走 §2.3 的 `convo` 读取，排除最新一条即当前输入）。
 
 维护时注意：
 
@@ -214,7 +217,30 @@
 
 这部分主要依赖 TavernHelper，而不是 StoryOracleAPI。排查问题时应先确认 TavernHelper 是否仍暴露 `getLorebookEntries`、`setLorebookEntries`、`createLorebookEntries`、`createLorebook`、`getCharWorldbookNames`、`rebindCharWorldbooks`。
 
-### 5.6 连接层（旧「最终模式」）归属说明
+### 5.6 模板三层存储（`src/storage.js` / `src/templates.js` / `src/template-io.js`）
+
+1.6.0 起，大纲模板不再只存 localStorage（5MB 总量上限，大模板会静默保存失败），改为三层存储。全部走**酒馆公开接口**（与 Data Bank 附件同款通道），不经故事神谕本体、不用 unsafe.eval、**不消耗 token**（请求只到酒馆后端进程，不接触 AI 供应商）：
+
+| 层级 | 载体 | 说明 |
+| --- | --- | --- |
+| server | 模板正文 → `POST /api/files/upload`（JSON body `{name, data: base64}`）落服务端 `user/files/` 目录，文件名 `so-outline-tpl-<清洗后名称>_<id>.txt`（服务端 `validateAssetFileName` 只收 ASCII，故可读中文名拼在 id 前仅作辨识）；列表索引 `[{id, name, url}]` 双写：**权威来源是同目录的 `so-outline-tpl-index.json`**（只有本插件会写），并镜像一份到 `SillyTavern.getContext().extensionSettings.storyOracleOutlineTemplates` + `saveSettingsDebounced()` | 主层。模板跟随酒馆数据目录（换浏览器/多端可用） |
+| idb | IndexedDB 库 `story_oracle_outline`，store `templates`，key `all`，整表一个数组 | 服务端不可用（云酒馆限制/网络故障/旧版酒馆）时自动降级 |
+| local | localStorage key `so_outline_templates`（旧 key 原样保留，永不删除） | 最终兜底；同时每次写入都会尽力写一份快照（超 5MB 时静默跳过） |
+
+行为要点：
+
+- **初始化**：`plugin.js` 挂载时后台调 `initTemplateStorage()`（不阻塞）。层级探测顺序：服务端索引可读（`getRequestHeaders` 可用）→ server；否则 IndexedDB 有数据 → idb；否则 local。初始化完成前 `getCachedTemplates()` 回落读 localStorage 快照，保证同步读与 UI 零闪烁。
+- **迁移与合并**：服务端为准；localStorage / IndexedDB 快照中服务端没有的模板（id 不在索引）自动补传；缓存缺 `default` 模板时补回。旧 localStorage key **保留不删**作兜底备份。
+- **降级**：`persistTemplates` 写 server 失败 → 自动切 idb 重写 → 再失败切 local；每次会话只 toast 提示一次。下次会话初始化时若服务端恢复可用，本地独有模板自动补传。
+- **孤儿文件清理**：server 层保存时对照旧索引——被删除模板的 .txt、重命名导致文件名变化的旧 .txt，都会在索引落盘后经 `POST /api/files/delete` 逐个清理（删除失败只 console.warn，不影响保存结果）。因此「删除模板」会真正清掉 `user/files/` 下的文件。
+- **索引双写与自愈**：酒馆 settings.json 是整文件覆盖式保存，其他开着的旧酒馆标签页保存设置会把索引副本冲掉（实测发生过）。故索引以 `user/files/so-outline-tpl-index.json` 为权威来源，settings 副本仅作兜底；启动时若索引文件在而副本丢失，自动把副本恢复回去。
+- **空内容模板**：服务端对空 `data` 返回 400（`!request.body.data` 判 falsy）。空内容模板不上传文件，只记索引条目（`url: ''`），读取时按空内容还原；内容清空的模板其旧文件列入孤儿清理。
+- **去重防御**：索引读取与启动合并（local + idb 孤儿）都按 id 去重，历史脏数据 / 降级会话双写不会产生重复条目。
+- **读路径**：`templates.js` 的 `getTemplates()` 保持**同步签名**（读内存缓存），发送链路 `prompt.js` 无感知；写操作（`addTemplate`/`updateTemplate`/`deleteTemplate`/`saveTemplates`）已异步化，UI 层 await 后提示。
+- **导入/导出**（`src/template-io.js`，按钮在管理模板表单内）：导入只收 `.txt`（可多选，文件名去后缀 = 模板名，全文 = 内容，重名自动加「（2）」后缀不覆盖）；导出当前选中模板为 `<模板名>.txt`，可直接再导入。
+- **排查**：模板丢失/不同步时，按 `currentTier()`（控制台可查）确认当前层级；看 `loadServerIndex()` 读到的索引；DevTools Network 看 `/api/files/upload` 与 `user/files/...` GET 是否 200。酒馆若改名/移除 `/api/files` 端点，改 `storage.js` 顶部的 upload/download 两个函数即可。
+
+### 5.7 连接层（旧「最终模式」）归属说明
 
 旧「最终模式」兼容层（`src/final-mode.js`）已在 1.5.0 整层删除。其语义由故事神谕本体 1.22.0 的两个直连开关原生承载，**本插件不再维护连接层逻辑**——本节是历史交代，不是维护入口。
 
@@ -248,6 +274,12 @@
 - 保存一个连接预设（含勾选「地址原样使用」），切换再加载，确认「地址原样使用」复选框正确恢复；删除该预设弹出本体原生确认框（只弹一次）。
 - 删除一条消息，弹出本体原生确认框（只弹一次）。
 - 取消勾选「地址原样使用」，发送请求，确认仍打到 `地址/v1/chat/completions`，未被原样开关污染。
+- 设置面板「人格与提示词-系统提示词」下拉出现「大纲」项且可编辑（unsafe.eval 补丁 1 存活）。
+- 勾选「发送全量大纲聊天记录」后请求确实带上大纲房间历史（unsafe.eval 补丁 2 存活，读 convo）。
+- 大纲模式消息与普通聊天记录互不串房（unsafe.eval 补丁 3 存活，convoStreamKeyForMode 包装生效）。
+- 管理模板表单内点「导入模板」，选择一个/多个 .txt 导入：下拉出现新模板、名称取自文件名、重名自动加「（2）」后缀。
+- 选中一个模板点「导出模板」：浏览器下载 `<模板名>.txt`，内容与模板一致，可再导入。
+- 保存模板后刷新页面，模板仍在；DevTools Network 可见 `/api/files/upload`（server 层）或控制台日志显示层级为 idb/local（降级时）。
 
 ### 6.1 旧最终模式用户迁移验证（仅升级时跑一次）
 
