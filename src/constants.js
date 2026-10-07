@@ -13,6 +13,10 @@ export const OUTLINE_INCLUDE_ALL_CHAT_KEY = "so_outline_include_all_chat";
 export const TEMPLATE_SERVER_FILE_PREFIX = "so-outline-tpl-";
 export const TEMPLATE_SERVER_INDEX_KEY = "storyOracleOutlineTemplates";
 export const TEMPLATE_SERVER_INDEX_FILE = "so-outline-tpl-index.json";
+// 本体「系统提示词来源（补全预设）」中内置破限选项落盘的哨兵值（与本体常量 SO_JB_SENTINEL 同源）。
+// 它不是酒馆预设表里的真实预设名，TavernHelper.getPreset 查不到；本体故意取不可能与真实
+// 预设重名的形状，因此按字符串比较绝不会误命中自定义预设。
+export const SO_BUILTIN_JB_SENTINEL = "__so_builtin_jb__";
 
 export const OUTLINE_DEFAULT_SYSTEM_PROMPT = `
 你是「故事神谕」的大纲模式助手，专门用于生成剧情大纲。信条：**人物决定剧情，非剧情驱动人物**。拒绝刻板印象、脸谱化、套路。人的复杂性——矛盾、犹豫、自我欺骗、隐秘动机——是好故事的根基。

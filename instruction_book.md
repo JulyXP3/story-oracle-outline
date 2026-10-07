@@ -2,7 +2,7 @@
 
 本文面向后续接手维护本仓库的人，说明当前插件相对《交接指南》中 Hook API 路线的符合情况、项目结构、本体与插件的边界，以及后续改动应该从哪里下手。
 
-> **版本基线**：本文最初对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁；后续为支持大纲系统提示词进入本体设置面板、发送全量大纲聊天记录、以及大纲模式独立聊天房间，重新引入少量 `api.unsafe.eval`。1.6.0（2026-10-01）把大纲模板持久化从 localStorage 升级为三层存储（服务端文件 / IndexedDB / localStorage，见 §5.7），并核对本体 1.89.0 兼容性（Hook API 与 §2.3 落点全部不变）。除 §2.3 明确列出的逃生阀外，主链路仍走 `StoryOracleAPI` 正式接口 + 本体原生开关。
+> **版本基线**：本文最初对应插件 1.5.0 + 故事神谕本体 1.22.0。1.5.0 删除了旧「最终模式兼容层」与「删除二次确认」两块补丁；后续为支持大纲系统提示词进入本体设置面板、发送全量大纲聊天记录、以及大纲模式独立聊天房间，重新引入少量 `api.unsafe.eval`。1.6.0（2026-10-01）把大纲模板持久化从 localStorage 升级为三层存储（服务端文件 / IndexedDB / localStorage，见 §5.6），并核对本体 1.89.0 兼容性（Hook API 与 §2.3 落点全部不变）。1.6.1（2026-10-07）修复大纲模式「套用补全预设」对本体内置破限不生效的问题——内置破限在本体里只是哨兵值而非真实预设，`TavernHelper.getPreset` 查不到；现改为 `unsafe.eval` 只读读回本体冻结常量并按本体包裹形状拼接，成为 §2.3 第四处落点。除 §2.3 明确列出的逃生阀外，主链路仍走 `StoryOracleAPI` 正式接口 + 本体原生开关。
 
 ---
 
@@ -52,7 +52,7 @@
 | `src/outline-inject.js` | 用 TavernHelper 写入 `<角色>-剧情指导` 世界书                                                                          | SillyTavern / TavernHelper 侧能力，交接指南已明确该文件与故事神谕本体无关                          | 保留。TavernHelper API 变化时再跟进                                                                                  |
 | `src/prompt.js`      | 调 `api.context.buildWorldInfo({ excludeBooks })` 后，仍用 `ctx.loadWorldInfo` / `TavernHelper.getLorebookEntries` 兜底剔除「剧情指导」 | 外部依赖（ST / TavernHelper）+ 双保险逻辑，**不是**本体私有函数依赖                                | 可保留。它解决不同环境里 `excludeBooks` 可能未完全剔除的兼容问题。若确认本体 1.21+ 的 `excludeBooks` 稳定可靠，可简化掉兜底剔除 |
 | `src/prompt.js`      | 走 MVU 框架公开 API（`window.Mvu` / TavernHelper `waitGlobalInitialized('Mvu')` → `Mvu.getMvuData`）读取 stat_data | 外部依赖（酒馆助手 MVU 框架），与本体参谋模式同源；**不是**本体私有函数，不用 unsafe.eval          | 保留。本体 1.77.x 只在内置模式抓变量（`generateReply` :25687 把注册插件模式排除在 `chatStatData` 外），插件侧走公开通道补齐；MVU API 变化时跟进 |
-| `src/templates.js`   | 模板正文/列表持久化走 `src/storage.js` 三层存储（服务端文件 / IndexedDB / localStorage），详见 §5.7；不依赖本体 | 插件自有状态 + 酒馆公开接口（`/api/files`、`SillyTavern.getContext()`）                            | 保留。酒馆 `/api/files` 行为变化时跟进                                                                                              |
+| `src/templates.js`   | 模板正文/列表持久化走 `src/storage.js` 三层存储（服务端文件 / IndexedDB / localStorage），详见 §5.6；不依赖本体 | 插件自有状态 + 酒馆公开接口（`/api/files`、`SillyTavern.getContext()`）                            | 保留。酒馆 `/api/files` 行为变化时跟进                                                                                              |
 
 ### 2.3 `api.unsafe.eval` 逃生阀使用记录
 
@@ -63,6 +63,7 @@
 | 大纲系统提示词注入设置面板 | `src/plugin.js` `injectOutlineSysPrompt()` | 向本体 `SYSPROMPT_MODES` 数组 push `{ id:'outline', key:'outlineSystemPrompt', ... }`；设 `defaults.outlineSystemPrompt = ''`；往 `#so-sysprompt-which` 下拉框补选项 | Hook API 新增 `api.registerSysPromptMode(id, label, builtin)`                             | 设置面板下拉框无"大纲"选项，用户无法在设置里编辑大纲提示词。插件退化为只使用内置默认提示词 |
 | 发送全量大纲聊天记录 | `src/prompt.js` `buildMessages()` | 当用户勾选"发送全量大纲聊天记录"时，读本体模块作用域的 `convo` 数组，过滤 `user`/`assistant` 轮次，排除最新一条（即当前输入），拼入 `messages` | Hook API 新增 `api.getConversation()` 或 `registerMode` 支持 `historyMode: true`（本体已预留字段但未实现） | 勾选框无效，相当于没勾，退化为只发当前 user 消息 |
 | 大纲模式独立聊天房间 | `src/plugin.js` `injectOutlineModeRoom()` / `syncOutlineModeRoom()` | 包装本体 `convoStreamKeyForMode(mode, s)`：`mode === 'outline'` 时返回 `'outline'`；进入大纲模式时额外调用本体 `syncConvoStream()` 完成实际换房 | `registerMode` 支持 `streamKey: 'outline'`，并在本体 `toggleRegisteredMode()` 设定 `activeRegisteredModeId` 后自动同步房间 | 大纲模式继续落在 `main` 流，和普通聊天共用 `storyOracle_convo` |
+| 大纲模式套用内置破限 | `src/prompt.js` `getBuiltinJb()` | 本体「系统提示词来源（补全预设）」选中内置破限时 `sysPromptPresetName` 落盘的是哨兵值 `__so_builtin_jb__`（非真实预设名，`TavernHelper.getPreset` 查不到）。`getBuiltinJb` 经 unsafe.eval 一次性读回本体常量 `({ on: ENABLE_BUILTIN_JAILBREAK, core: BUILTIN_JB_CORE, tail: BUILTIN_JB_TAIL })`：core 拼在大纲提示词最前，tail 作为整组 messages 的最后一条 system 消息（位序与本体 `wrapBuiltinJb` 一致），`{{user}}` 宏由 `ctx.substituteParams` 替换 | Hook API 新增只读口，如 `api.sysprompt.builtinJb()` 返回 `{active, core, tail}` | 回落为不拼破限（等同 1.6.x 现状），控制台有 `LOG_PREFIX` warn；kill switch `ENABLE_BUILTIN_JAILBREAK=false` 时同样视为未启用 |
 
 **排查要点：**
 - 若设置面板下拉框缺少「大纲」→ 检查 `SYSPROMPT_MODES` 是否改名 / 移出模块顶层（如变成 `let` 或移到函数内）
@@ -70,6 +71,7 @@
 - 本体未来若把 `SYSPROMPT_MODES` 改为函数返回 / Map 结构 / 移出模块作用域，本表所有调用需同步改动
 - 若「发送全量大纲聊天记录」勾选后无效 → 检查本体 `convo` 变量是否改名、是否仍为模块顶层变量（如改为 `let convo` 仍可读，若移入函数作用域则 unsafe.eval 无法访问）
 - 若大纲模式仍和普通聊天共用记录 → 检查 `convoStreamKeyForMode` 是否改名、是否仍可重赋值；再检查 `syncConvoStream()` 是否改名、注册模式 `onEnter` 是否仍在 `activeRegisteredModeId = id` 后执行；最后检查本体是否改了房间 key 生成规则 `convoMetaKeyFor()`
+- 若选内置破限后大纲请求里没有破限块 → 检查本体常量 `BUILTIN_JB_CORE` / `BUILTIN_JB_TAIL` / `ENABLE_BUILTIN_JAILBREAK` 是否改名或移出模块顶层（eval 抛错会走回落并在控制台告警）；再确认本体落盘的仍是哨兵值 `__so_builtin_jb__`——本体 `SO_JB_SENTINEL` 若换值，需同步 `src/constants.js` 的 `SO_BUILTIN_JB_SENTINEL`；最后确认大纲栏「套用补全预设」勾选框在勾选状态
 
 > ⚠️ 注意：旧版文档曾把 `src/prompt.js` 的兜底剔除列为「违背 Hook 路线」，那是旧 `final-mode.js` 时代风险表里的归类错误——它既不是本体私有函数，也不是 `eval`，本就不属于「违背故事神谕 Hook 路线」范畴。1.5.0 文档已更正。
 
@@ -112,7 +114,7 @@
 2. `index.js` 等待故事神谕本体暴露 `window.StoryOracleAPI` 或派发 `story-oracle-ready`。
 3. 握手成功后动态导入 `src/plugin.js`。
 4. `plugin.js` 校验 `api.isCompatible(1)`，不通过则放弃挂载。
-5. 校验通过后后台调用 `initTemplateStorage()`（不阻塞挂载）——探测模板存储层级并迁移旧 localStorage 模板，见 §5.7。
+5. 校验通过后后台调用 `initTemplateStorage()`（不阻塞挂载）——探测模板存储层级并迁移旧 localStorage 模板，见 §5.6。
 6. 调用 `migrateFinalModeState(api)`——仅旧最终模式用户触发一次，把配置搬到本体原生开关。
 7. 调用 `api.registerMode({ id: 'outline', ... })` 注册大纲模式。
 8. 调用 `api.addMessageAction()`（在 `registerMessageActions` 内）注册回复按钮。
@@ -162,6 +164,7 @@
 6. 「标签补充」是否只修改最新一条助手回复并持久化。
 7. 直连区「地址原样使用」+「经酒馆后端转发」两个开关是否能正常获取模型、发送请求。
 8. 删除消息和删除连接预设是否仍弹出确认（本体 1.22.0 原生 `uiConfirm`，插件不再拦截）。
+9. 内置破限相关（§2.3 第四处）：本体设置里「系统提示词来源（补全预设）」选内置破限 + 大纲栏勾选「套用补全预设」，大纲请求首条 system 应含 `<sys>` 破限头、末条消息应为 `[Sandbox active...]` 尾块、控制台无 `读取本体内置破限常量失败` 告警；本体若升级内置破限（下拉标签里「初心破限1.2」版本号变化）或改动常量名 / 哨兵值，重点核对这一条。
 
 排查入口：
 
@@ -173,7 +176,7 @@
 
 - 默认系统提示词在 `src/constants.js` 的 `OUTLINE_DEFAULT_SYSTEM_PROMPT`。
 - 默认模板在 `src/constants.js` 的 `DEFAULT_TEMPLATE`。
-- 用户自建模板的持久化见 §5.7（三层存储；旧 localStorage key `so_outline_templates` 保留作兜底）。
+- 用户自建模板的持久化见 §5.6（三层存储；旧 localStorage key `so_outline_templates` 保留作兜底）。
 - 当前选中模板保存在 localStorage key `so_outline_template_selected`。
 - 修改默认模板时注意：存储层若已存在 `default` 模板，不会自动覆盖成新默认值；仅当缓存中缺 `default` 时由存储层补回。
 
@@ -183,15 +186,15 @@
 
 当前请求结构：
 
-- system：默认系统提示词 + 可选补全预设 + 当前模板 + 角色卡 + MVU 变量状态（跟随本体「带上实时变量状态」开关，非 MVU 卡整段省略）+ 世界书 + 最近故事对话记录。
-- messages：默认只保留本轮用户输入 `[{ role: 'user', content: userText }]`；勾选「发送全量大纲聊天记录」时会拼入大纲房间的历史轮次（走 §2.3 的 `convo` 读取，排除最新一条即当前输入）。
+- system：默认系统提示词 + 可选补全预设 + 当前模板 + 角色卡 + MVU 变量状态（跟随本体「带上实时变量状态」开关，非 MVU 卡整段省略）+ 世界书 + 最近故事对话记录。补全预设两种来源：自定义预设取其 main system 提示词（`TavernHelper.getPreset` 查表）；内置破限走哨兵分支（§2.3 第四处），本体 `BUILTIN_JB_CORE` 拼在最前。
+- messages：默认只保留本轮用户输入 `[{ role: 'user', content: userText }]`；勾选「发送全量大纲聊天记录」时会拼入大纲房间的历史轮次（走 §2.3 的 `convo` 读取，排除最新一条即当前输入）；选内置破限时末尾追加一条 `[Sandbox active...]` system 尾块（宏替换后），位序与本体 `wrapBuiltinJb` 一致。
 
 维护时注意：
 
 - 不要恢复旧版 `fetch` 拦截。
 - 不要直接调用本体私有的 `buildSystemPrompt`、`generateReply`、`stripReasoningTags`。
 - 需要故事上下文时优先使用 `api.context.*`。
-- `api.context.*` 返回未宏替换文本，最终只在拼完后调用一次 `ctx.substituteParams()`。
+- `api.context.*` 返回未宏替换文本，最终只在拼完后调用一次 `ctx.substituteParams()`；内置破限尾块在同一段里单独替换（`buildOutlineSend` 内）。
 
 ### 5.4 修改消息按钮或回复编辑
 
@@ -277,6 +280,8 @@
 - 设置面板「人格与提示词-系统提示词」下拉出现「大纲」项且可编辑（unsafe.eval 补丁 1 存活）。
 - 勾选「发送全量大纲聊天记录」后请求确实带上大纲房间历史（unsafe.eval 补丁 2 存活，读 convo）。
 - 大纲模式消息与普通聊天记录互不串房（unsafe.eval 补丁 3 存活，convoStreamKeyForMode 包装生效）。
+- 「系统提示词来源（补全预设）」选内置破限 + 勾选大纲栏「套用补全预设」：请求首条 system 含 `<sys>` 破限头、末条消息为 `[Sandbox active...]` 尾块、`{{user}}` 已替换（unsafe.eval 补丁 4 存活）。
+- 同一勾选下换回任意自定义预设：请求以该预设 main 提示词开头、无破限头尾，与 1.6.0 行为逐字节一致（回归保护）。
 - 管理模板表单内点「导入模板」，选择一个/多个 .txt 导入：下拉出现新模板、名称取自文件名、重名自动加「（2）」后缀。
 - 选中一个模板点「导出模板」：浏览器下载 `<模板名>.txt`，内容与模板一致，可再导入。
 - 保存模板后刷新页面，模板仍在；DevTools Network 可见 `/api/files/upload`（server 层）或控制台日志显示层级为 idb/local（降级时）。

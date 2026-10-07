@@ -1,17 +1,42 @@
 // 模块：大纲模式提示词构建
 // 作用：实现 registerMode.onSend，用 StoryOracleAPI 的 context 构建角色卡、世界书、
 // 最近对话记录，并排除「<角色>-剧情指导」世界书，最终返回 {system, messages}。
-import { LOG_PREFIX, OUTLINE_DEFAULT_SYSTEM_PROMPT } from './constants.js';
+import { LOG_PREFIX, OUTLINE_DEFAULT_SYSTEM_PROMPT, SO_BUILTIN_JB_SENTINEL } from './constants.js';
 import { getTemplate, selectedTemplateId } from './templates.js';
 
+// 内置破限的正文是本体模块内部的冻结常量（BUILTIN_JB_CORE / BUILTIN_JB_TAIL），不在酒馆
+// 预设表里、也没有经 Hook API 暴露，只能经 api.unsafe.eval 只读提取（§2.3 台账第四处）。
+// 一次 eval 连 kill switch 一起读回：本体关闭内置破限（ENABLE_BUILTIN_JAILBREAK=false）→
+// 视为未启用；本体改名/移除常量 → eval 抛错 → 回落「不拼破限」（即 1.6.x 的现状），绝不拼出残缺内容。
+function getBuiltinJb(api) {
+  try {
+    if (!api.unsafe || typeof api.unsafe.eval !== 'function') return null;
+    const blob = api.unsafe.eval('({ on: ENABLE_BUILTIN_JAILBREAK, core: BUILTIN_JB_CORE, tail: BUILTIN_JB_TAIL })');
+    if (!blob || blob.on !== true) return null;
+    if (typeof blob.core !== 'string' || !blob.core) return null;
+    return { systemPrompt: blob.core, tail: typeof blob.tail === 'string' ? blob.tail : '' };
+  } catch (e) {
+    console.warn(LOG_PREFIX + '读取本体内置破限常量失败（回落为不拼破限）:', e);
+    return null;
+  }
+}
+
+// 返回 { systemPrompt, tail }：systemPrompt 拼在大纲提示词最前，tail 非空时作为整组消息
+// 的最后一条 system 追加（忠实照搬本体 wrapBuiltinJb 的头尾包裹形状）。
+// 自定义预设走原有提取逻辑，tail 恒为空串；内置破限走哨兵分支（getBuiltinJb）。
 function getPresetSystemPrompt(api) {
   try {
-    const pwin = window.parent || window;
-    const helper = pwin.TavernHelper;
-    if (!helper || typeof helper.getPreset !== 'function') return null;
     const settings = api.context.getSettings();
     const presetName = settings && settings.sysPromptPresetName;
     if (!presetName) return null;
+    if (presetName === SO_BUILTIN_JB_SENTINEL) {
+      const jb = getBuiltinJb(api);
+      if (jb) console.log(LOG_PREFIX + '使用本体内置破限（哨兵命中，unsafe.eval 只读提取）');
+      return jb;
+    }
+    const pwin = window.parent || window;
+    const helper = pwin.TavernHelper;
+    if (!helper || typeof helper.getPreset !== 'function') return null;
     const preset = helper.getPreset(presetName);
     if (!preset || !Array.isArray(preset.prompts)) return null;
     let systemPrompt = preset.prompts.find((p) => p.identifier === 'system_prompt');
@@ -19,7 +44,7 @@ function getPresetSystemPrompt(api) {
     if (!systemPrompt) systemPrompt = preset.prompts.find((p) => p.role === 'system');
     if (systemPrompt && systemPrompt.content) {
       console.log(LOG_PREFIX + '使用补全预设:', presetName);
-      return systemPrompt.content;
+      return { systemPrompt: systemPrompt.content, tail: '' };
     }
   } catch (e) {
     console.warn(LOG_PREFIX + '获取补全预设失败:', e);
@@ -52,6 +77,8 @@ async function loadMvuStatSection() {
   }
 }
 
+// 返回 { text, jbTail }：text 是大纲系统提示词全文，jbTail 是内置破限尾块
+// （非空时由 buildMessages 追加为最后一条消息；自定义预设恒为空串）。
 function getOutlineSystemPrompt(api) {
   const usePreset = !!document.getElementById('so-outline-use-preset')?.checked;
   const s = api.context.getSettings();
@@ -59,12 +86,17 @@ function getOutlineSystemPrompt(api) {
     ? s.outlineSystemPrompt
     : OUTLINE_DEFAULT_SYSTEM_PROMPT;
   let basePrompt = outlinePrompt;
+  let jbTail = '';
   if (usePreset) {
-    const presetPrompt = getPresetSystemPrompt(api);
-    if (presetPrompt) basePrompt = presetPrompt + '\n\n' + basePrompt;
+    const preset = getPresetSystemPrompt(api);
+    if (preset && preset.systemPrompt) {
+      basePrompt = preset.systemPrompt + '\n\n' + basePrompt;
+      jbTail = preset.tail || '';
+    }
   }
   const template = getTemplate(selectedTemplateId());
-  return template && template.content ? basePrompt + '\n\n' + template.content : basePrompt;
+  const text = template && template.content ? basePrompt + '\n\n' + template.content : basePrompt;
+  return { text, jbTail };
 }
 
 function getPlotGuideBookName(ctx) {
@@ -134,7 +166,8 @@ async function stripPlotGuide(worldInfo, ctx) {
 
 export async function buildOutlineSend(userText, ctx, api) {
   const settings = api.context.getSettings();
-  const parts = [getOutlineSystemPrompt(api)];
+  const outlineSys = getOutlineSystemPrompt(api);
+  const parts = [outlineSys.text];
 
   try {
     if (settings && settings.includeCard) {
@@ -180,25 +213,42 @@ export async function buildOutlineSend(userText, ctx, api) {
     }
   }
 
-  return { system, messages: buildMessages(userText, api) };
+  // 内置破限尾块含 {{user}}，与本体 wrapBuiltinJb 同口径跑宏替换；替换失败保留原文
+  // （字面 {{user}} 是小疵，直接丢尾块等于砍掉半份破限）。
+  let jbTail = outlineSys.jbTail || '';
+  if (jbTail && ctx && typeof ctx.substituteParams === 'function') {
+    try {
+      jbTail = ctx.substituteParams(jbTail);
+    } catch (e) {
+      console.warn(LOG_PREFIX + '内置破限尾块宏替换失败，保留原文:', e);
+    }
+  }
+
+  return { system, messages: buildMessages(userText, api, jbTail) };
 }
 
-function buildMessages(userText, api) {
+function buildMessages(userText, api, jbTail) {
   const includeAllChat = document.getElementById('so-outline-include-all-chat')?.checked;
+  let msgs;
   if (!includeAllChat || !api.unsafe || typeof api.unsafe.eval !== 'function') {
-    return [{ role: 'user', content: String(userText || '') }];
-  }
-  try {
-    const rounds = api.unsafe.eval(
-      '[...convo].filter(m => m && (m.role === "user" || m.role === "assistant")).slice(0, -1)'
-    );
-    if (Array.isArray(rounds) && rounds.length) {
-      const msgs = rounds.map(m => ({ role: m.role, content: m.content }));
-      msgs.push({ role: 'user', content: String(userText || '') });
-      return msgs;
+    msgs = [{ role: 'user', content: String(userText || '') }];
+  } else {
+    try {
+      const rounds = api.unsafe.eval(
+        '[...convo].filter(m => m && (m.role === "user" || m.role === "assistant")).slice(0, -1)'
+      );
+      if (Array.isArray(rounds) && rounds.length) {
+        msgs = rounds.map(m => ({ role: m.role, content: m.content }));
+        msgs.push({ role: 'user', content: String(userText || '') });
+      } else {
+        msgs = [{ role: 'user', content: String(userText || '') }];
+      }
+    } catch (e) {
+      console.warn(LOG_PREFIX + '通过unsafe.eval读取convo历史失败:', e);
+      msgs = [{ role: 'user', content: String(userText || '') }];
     }
-  } catch (e) {
-    console.warn(LOG_PREFIX + '通过unsafe.eval读取convo历史失败:', e);
   }
-  return [{ role: 'user', content: String(userText || '') }];
+  // 内置破限尾块（post-history）：整组消息的最后一条 system —— 位序忠实照搬本体 wrapBuiltinJb。
+  if (jbTail) msgs.push({ role: 'system', content: jbTail });
+  return msgs;
 }
