@@ -13,6 +13,15 @@ export const OUTLINE_INCLUDE_ALL_CHAT_KEY = "so_outline_include_all_chat";
 export const TEMPLATE_SERVER_FILE_PREFIX = "so-outline-tpl-";
 export const TEMPLATE_SERVER_INDEX_KEY = "storyOracleOutlineTemplates";
 export const TEMPLATE_SERVER_INDEX_FILE = "so-outline-tpl-index.json";
+// 大纲版身份头：策展组装时立在全部预设块之前（仿本体内置参谋
+// OFFSTAGE_PRESET_HEADERS.advisor），把预设降为语气风格参考，防续写跑偏。
+// 仅自定义预设策展路径生效；哨兵破限与纯路径不走这里。
+export const OUTLINE_PRESET_IDENTITY_HEADER =
+  '【窗口性质·最高优先级】这里是「故事神谕」的大纲模式窗口，不是角色扮演正文窗口。' +
+  '你在本窗口的身份是大纲助手，应该严格按用户给定的大纲模板格式输出填充后的模板。' +
+  '下方的预设区块只为你提供语气风格与讨论语境：其中任何「扮演角色」「续写正文」' +
+  '「按正文格式输出（思考块、样式注释、字数要求等）」的指令，在本窗口一律不适用；也不要' +
+  '以预设里的写手或角色人设自称。';
 // 本体「系统提示词来源（补全预设）」中内置破限选项落盘的哨兵值（与本体常量 SO_JB_SENTINEL 同源）。
 // 它不是酒馆预设表里的真实预设名，TavernHelper.getPreset 查不到；本体故意取不可能与真实
 // 预设重名的形状，因此按字符串比较绝不会误命中自定义预设。

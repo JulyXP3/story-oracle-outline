@@ -1,7 +1,7 @@
 // 模块：大纲模式提示词构建
 // 作用：实现 registerMode.onSend，用 StoryOracleAPI 的 context 构建角色卡、世界书、
 // 最近对话记录，并排除「<角色>-剧情指导」世界书，最终返回 {system, messages}。
-import { LOG_PREFIX, OUTLINE_DEFAULT_SYSTEM_PROMPT, SO_BUILTIN_JB_SENTINEL } from './constants.js';
+import { LOG_PREFIX, OUTLINE_DEFAULT_SYSTEM_PROMPT, OUTLINE_PRESET_IDENTITY_HEADER, SO_BUILTIN_JB_SENTINEL } from './constants.js';
 import { getTemplate, selectedTemplateId } from './templates.js';
 
 // 内置破限的正文是本体模块内部的冻结常量（BUILTIN_JB_CORE / BUILTIN_JB_TAIL），不在酒馆
@@ -21,35 +21,57 @@ function getBuiltinJb(api) {
   }
 }
 
-// 返回 { systemPrompt, tail }：systemPrompt 拼在大纲提示词最前，tail 非空时作为整组消息
-// 的最后一条 system 追加（忠实照搬本体 wrapBuiltinJb 的头尾包裹形状）。
-// 自定义预设走原有提取逻辑，tail 恒为空串；内置破限走哨兵分支（getBuiltinJb）。
-function getPresetSystemPrompt(api) {
+// 自定义补全预设走本体同款「快照逐块、保 role 组装」（与本体 buildPresetMessages 同语义）：
+// 读 settings.curatedPresets[name].items（「重新挑选要保留的块」的冻结结果，顺序即快照顺序）。
+// 快照缺失（选了名但没保存过策展）→ 按本体 presetCurationActive 口径视为未启用，返回 null。
+// 读 settings 公开对象即可，不用 unsafe.eval。
+function getCuratedPresetItems(api) {
   try {
     const settings = api.context.getSettings();
     const presetName = settings && settings.sysPromptPresetName;
-    if (!presetName) return null;
-    if (presetName === SO_BUILTIN_JB_SENTINEL) {
-      const jb = getBuiltinJb(api);
-      if (jb) console.log(LOG_PREFIX + '使用本体内置破限（哨兵命中，unsafe.eval 只读提取）');
-      return jb;
-    }
-    const pwin = window.parent || window;
-    const helper = pwin.TavernHelper;
-    if (!helper || typeof helper.getPreset !== 'function') return null;
-    const preset = helper.getPreset(presetName);
-    if (!preset || !Array.isArray(preset.prompts)) return null;
-    let systemPrompt = preset.prompts.find((p) => p.identifier === 'system_prompt');
-    if (!systemPrompt) systemPrompt = preset.prompts.find((p) => p.name === 'Main Prompt' && p.role === 'system');
-    if (!systemPrompt) systemPrompt = preset.prompts.find((p) => p.role === 'system');
-    if (systemPrompt && systemPrompt.content) {
-      console.log(LOG_PREFIX + '使用补全预设:', presetName);
-      return { systemPrompt: systemPrompt.content, tail: '' };
-    }
+    if (!presetName || presetName === SO_BUILTIN_JB_SENTINEL) return null;
+    const snap = settings.curatedPresets && settings.curatedPresets[presetName];
+    const items = snap && snap.items;
+    if (!Array.isArray(items) || !items.length) return null;
+    return items;
   } catch (e) {
-    console.warn(LOG_PREFIX + '获取补全预设失败:', e);
+    console.warn(LOG_PREFIX + '读取预设策展快照失败:', e);
+    return null;
   }
-  return null;
+}
+
+// 单块宏替换（本体 subst 同款：失败保留原文）。
+function substBlock(ctx, text) {
+  try {
+    if (ctx && typeof ctx.substituteParams === 'function') return ctx.substituteParams(String(text == null ? '' : text));
+  } catch (e) {
+    console.warn(LOG_PREFIX + '预设块宏替换失败，保留原文:', e);
+  }
+  return String(text == null ? '' : text);
+}
+
+// 把快照拆成槽前 / 槽后两组消息：文本块保 role 落位（空内容跳过，同本体 pushMsg），
+// marker 块一律跳过（大纲自带卡/世界书/记录，同参谋/世界书模式策略）；首个 chatHistory
+// 为槽位，后续重复槽位同样跳过（只放一次）。
+function splitPresetBlocks(items, ctx) {
+  const pre = [];
+  const post = [];
+  let sawHistory = false;
+  let slotOpen = false;
+  for (const it of items) {
+    if (!it || typeof it !== 'object') continue;
+    if (it.kind === 'marker') {
+      if (it.identifier === 'chatHistory' && !sawHistory) {
+        sawHistory = true;
+        slotOpen = true;
+      }
+      continue;
+    }
+    const content = substBlock(ctx, it.content);
+    if (!content.trim()) continue;
+    (slotOpen ? post : pre).push({ role: it.role || 'system', content });
+  }
+  return { pre, post, sawHistory };
 }
 
 // MVU（MagVarUpdate 变量框架）公开 API 读取当前 stat_data——与本体参谋模式同源（本体 getMvuStatData
@@ -77,26 +99,15 @@ async function loadMvuStatSection() {
   }
 }
 
-// 返回 { text, jbTail }：text 是大纲系统提示词全文，jbTail 是内置破限尾块
-// （非空时由 buildMessages 追加为最后一条消息；自定义预设恒为空串）。
-function getOutlineSystemPrompt(api) {
-  const usePreset = !!document.getElementById('so-outline-use-preset')?.checked;
+// 大纲正文（系统提示词 + 当前模板）：不含任何补全预设/破限成分，预设块与破限由
+// buildOutlineSend 在消息级组装（保 role，与本体参谋/世界书模式同理）。
+function getOutlineDirective(api) {
   const s = api.context.getSettings();
   const outlinePrompt = (typeof s.outlineSystemPrompt === 'string' && s.outlineSystemPrompt.trim())
     ? s.outlineSystemPrompt
     : OUTLINE_DEFAULT_SYSTEM_PROMPT;
-  let basePrompt = outlinePrompt;
-  let jbTail = '';
-  if (usePreset) {
-    const preset = getPresetSystemPrompt(api);
-    if (preset && preset.systemPrompt) {
-      basePrompt = preset.systemPrompt + '\n\n' + basePrompt;
-      jbTail = preset.tail || '';
-    }
-  }
   const template = getTemplate(selectedTemplateId());
-  const text = template && template.content ? basePrompt + '\n\n' + template.content : basePrompt;
-  return { text, jbTail };
+  return template && template.content ? outlinePrompt + '\n\n' + template.content : outlinePrompt;
 }
 
 function getPlotGuideBookName(ctx) {
@@ -166,8 +177,7 @@ async function stripPlotGuide(worldInfo, ctx) {
 
 export async function buildOutlineSend(userText, ctx, api) {
   const settings = api.context.getSettings();
-  const outlineSys = getOutlineSystemPrompt(api);
-  const parts = [outlineSys.text];
+  const parts = [getOutlineDirective(api)];
 
   try {
     if (settings && settings.includeCard) {
@@ -213,18 +223,48 @@ export async function buildOutlineSend(userText, ctx, api) {
     }
   }
 
-  // 内置破限尾块含 {{user}}，与本体 wrapBuiltinJb 同口径跑宏替换；替换失败保留原文
-  // （字面 {{user}} 是小疵，直接丢尾块等于砍掉半份破限）。
-  let jbTail = outlineSys.jbTail || '';
-  if (jbTail && ctx && typeof ctx.substituteParams === 'function') {
-    try {
-      jbTail = ctx.substituteParams(jbTail);
-    } catch (e) {
-      console.warn(LOG_PREFIX + '内置破限尾块宏替换失败，保留原文:', e);
+  // 「套用补全预设」勾选时走本体同款消息级组装（保 role，顺序跟快照）。
+  if (document.getElementById('so-outline-use-preset')?.checked) {
+    const presetName = settings && settings.sysPromptPresetName;
+    // 哨兵（内置破限）：消息级包裹 [core, 大纲正文, ...对话, tail]，与本体 wrapBuiltinJb 同形。
+    if (presetName === SO_BUILTIN_JB_SENTINEL) {
+      const jb = getBuiltinJb(api);
+      if (jb) {
+        console.log(LOG_PREFIX + '使用本体内置破限（哨兵命中，unsafe.eval 只读提取）');
+        const messages = [
+          { role: 'system', content: substBlock(ctx, jb.systemPrompt) },
+          { role: 'system', content: system },
+          ...buildMessages(userText, api, ''),
+        ];
+        const tail = substBlock(ctx, jb.tail);
+        if (tail.trim()) messages.push({ role: 'system', content: tail });
+        return { system: '', messages };
+      }
+      // kill switch 关 / 常量读失败 → 回落纯路径（getBuiltinJb 内已告警）。
+    } else if (presetName) {
+      const items = getCuratedPresetItems(api);
+      if (items) {
+        console.log(LOG_PREFIX + '使用补全预设策展快照:', presetName);
+        return { system: '', messages: assembleCuratedOutline(items, system, userText, ctx, api) };
+      }
+      // 有名无快照 = 没保存过策展 → 按本体口径忽略预设（presetCurationActive 为假）。
+      console.log(LOG_PREFIX + '补全预设无策展快照，按本体口径忽略预设走纯提示词路径:', presetName);
     }
   }
 
-  return { system, messages: buildMessages(userText, api, jbTail) };
+  return { system, messages: buildMessages(userText, api, '') };
+}
+
+// 大纲正文在 chatHistory 槽位落位（同本体 placeAdv/placeLore 骨架）：槽前块 → 大纲正文 →
+// 本轮对话 → 槽后块；快照无槽位则全部预设块在前、大纲正文与对话缀后。
+function assembleCuratedOutline(items, directive, userText, ctx, api) {
+  const { pre, post, sawHistory } = splitPresetBlocks(items, ctx);
+  const convo = buildMessages(userText, api, '');
+  const dirMsgs = directive.trim() ? [{ role: 'system', content: directive }] : [];
+  // 大纲版身份头：立在全部预设块之前（仿本体 OFFSTAGE_PRESET_HEADERS），仅策展路径生效。
+  const head = [{ role: 'system', content: OUTLINE_PRESET_IDENTITY_HEADER }];
+  if (!sawHistory) return [...head, ...pre, ...post, ...dirMsgs, ...convo];
+  return [...head, ...pre, ...dirMsgs, ...convo, ...post];
 }
 
 function buildMessages(userText, api, jbTail) {
@@ -248,7 +288,7 @@ function buildMessages(userText, api, jbTail) {
       msgs = [{ role: 'user', content: String(userText || '') }];
     }
   }
-  // 内置破限尾块（post-history）：整组消息的最后一条 system —— 位序忠实照搬本体 wrapBuiltinJb。
+  // jbTail 保留形参兼容：当前所有调用方均传 ''（破限尾块已在哨兵分支消息级追加）。
   if (jbTail) msgs.push({ role: 'system', content: jbTail });
   return msgs;
 }
