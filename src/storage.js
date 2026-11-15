@@ -1,192 +1,104 @@
 // 模块：模板服务端存储
-// 作用：大纲模板正文经酒馆 /api/files 存到服务端 user/files/ 目录，列表索引存酒馆
-//       extensionSettings（settings.json）。服务端不可用时自动降级 IndexedDB，再兜底
-//       localStorage（旧行为）。对外提供同步读（内存缓存）+ 异步写。
-// 依赖的都是酒馆公开接口：SillyTavern.getContext().getRequestHeaders / extensionSettings /
-//       saveSettingsDebounced（public/scripts/st-context.js 导出），不碰故事神谕本体。
-import { LOG_PREFIX, STORAGE_KEY, TEMPLATE_SERVER_FILE_PREFIX, TEMPLATE_SERVER_INDEX_FILE, TEMPLATE_SERVER_INDEX_KEY } from './constants.js';
+// 作用：正文与权威索引走酒馆 /api/files；失败时降级 IndexedDB / localStorage。
+// 同页写操作串行，只有持久化成功才发布缓存；不由旧列表缺项推断删除。
+import { DEFAULT_TEMPLATE, LOG_PREFIX, STORAGE_KEY, TEMPLATE_SERVER_FILE_PREFIX, TEMPLATE_SERVER_INDEX_FILE, TEMPLATE_SERVER_INDEX_KEY } from './constants.js';
 
-// 存储层级标识：server = 服务端文件 + settings 索引；idb = IndexedDB；local = localStorage。
 export const STORAGE_TIER = { SERVER: 'server', IDB: 'idb', LOCAL: 'local' };
-
-// 内存缓存：模板数组（[{id, name, content}]）+ 数据只存在当前层级。getTemplates() 同步读这里。
-let cache = null;
-let tier = STORAGE_TIER.LOCAL;
-// 初始化完成标记：完成前 getTemplates() 会先读 localStorage 快照（旧行为），保证同步可用。
-let initialized = false;
-// 降级提示每会话只弹一次。
-let downgradeToasted = false;
-
-function getStContext() {
-  try {
-    if (window.SillyTavern && typeof window.SillyTavern.getContext === 'function') {
-      return window.SillyTavern.getContext();
-    }
-  } catch (e) { /* 酒馆未就绪时静默 */ }
-  return null;
-}
-
-// ---------- 层 1：服务端文件（/api/files）+ settings 索引 ----------
-
-function stRequestHeaders() {
-  const ctx = getStContext();
-  if (ctx && typeof ctx.getRequestHeaders === 'function') return ctx.getRequestHeaders();
-  return null;
-}
-
-function readSettingsIndex() {
-  const ctx = getStContext();
-  const index = ctx && ctx.extensionSettings && ctx.extensionSettings[TEMPLATE_SERVER_INDEX_KEY];
-  return Array.isArray(index) ? index : null;
-}
-
-// 索引读取：优先 user/files/ 下的索引文件（只有本插件会写，不怕其他酒馆标签页整写
-// settings.json 时把副本冲掉）；文件不可用时退回 settings.json 副本。
-// 无论哪个来源都按 id 去重（历史脏数据 / 多端合并可能产生重复条目）。
-async function loadServerIndex() {
-  let index = null;
-  try {
-    const headers = stRequestHeaders();
-    const res = await fetch('/user/files/' + TEMPLATE_SERVER_INDEX_FILE + '?t=' + Date.now(), {
-      method: 'GET',
-      headers: headers || undefined,
-    });
-    if (res.ok) {
-      const body = await res.json();
-      if (body && Array.isArray(body.templates)) index = body.templates;
-    }
-  } catch (e) { /* 走 settings 副本兜底 */ }
-  if (!index) index = readSettingsIndex();
-  if (!Array.isArray(index)) return [];
-  const seen = new Set();
-  return index.filter((m) => {
-    if (!m || !m.id || seen.has(m.id)) return false;
-    seen.add(m.id);
-    return true;
-  });
-}
-
-async function saveServerIndex(index) {
-  const ctx = getStContext();
-  if (!ctx || !ctx.extensionSettings) return;
-  ctx.extensionSettings[TEMPLATE_SERVER_INDEX_KEY] = index;
-  if (typeof ctx.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
-  try {
-    await uploadTemplateFile(TEMPLATE_SERVER_INDEX_FILE, JSON.stringify({ templates: index }));
-  } catch (e) {
-    console.warn(LOG_PREFIX + '索引文件写入失败（settings 副本已更新）:', e);
-  }
-}
-
-async function uploadTemplateFile(fileName, content) {
-  const headers = stRequestHeaders();
-  if (!headers) throw new Error('酒馆上下文不可用');
-  const base64 = btoa(unescape(encodeURIComponent(content)));
-  const res = await fetch('/api/files/upload', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ name: fileName, data: base64 }),
-  });
-  if (!res.ok) throw new Error('上传失败 HTTP ' + res.status + ': ' + (await res.text()).slice(0, 200));
-  const body = await res.json();
-  return body.path;
-}
-
-async function downloadTemplateFile(url) {
-  const headers = stRequestHeaders();
-  const res = await fetch(url, { method: 'GET', headers: headers || undefined });
-  if (!res.ok) throw new Error('读取失败 HTTP ' + res.status);
-  return res.text();
-}
-
-async function deleteTemplateFile(url) {
-  const headers = stRequestHeaders();
-  if (!headers) throw new Error('酒馆上下文不可用');
-  const res = await fetch('/api/files/delete', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ path: url }),
-  });
-  if (!res.ok) throw new Error('删除失败 HTTP ' + res.status);
-}
-
-// 文件名合法性与服务端一致（validateAssetFileName 只收 ASCII）；不合法则回退用 id 命名。
-// 一律拼上 id 尾巴：名称可读但可能撞名/重名，id 是唯一主键，保证服务端文件互不覆盖。
-function serverFileName(id, name) {
-  const safe = String(name || '').replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-.]/g, '');
-  const base = (safe ? safe + '_' : '') + id;
-  return TEMPLATE_SERVER_FILE_PREFIX + base + '.txt';
-}
-
-async function readServerAll() {
-  const index = await loadServerIndex();
-  const templates = [];
-  for (const meta of index) {
-    // 空内容的模板没有服务端文件（上传时跳过），直接按空内容还原。
-    if (!meta.url) {
-      templates.push({ id: meta.id, name: meta.name, content: '' });
-      continue;
-    }
-    try {
-      const content = await downloadTemplateFile(meta.url);
-      templates.push({ id: meta.id, name: meta.name, content });
-    } catch (e) {
-      console.warn(LOG_PREFIX + '服务端模板读取失败（跳过）:', meta.name, e);
-    }
-  }
-  return templates;
-}
-
-// ---------- 层 2：IndexedDB ----------
-
+const STORAGE_TIMEOUT_MS = 15000;
 const IDB_NAME = 'story_oracle_outline';
 const IDB_STORE = 'templates';
 const IDB_KEY = 'all';
+let cache = null;
+let tier = STORAGE_TIER.LOCAL;
+let initialized = false;
+let initPromise = null;
+let writeTail = Promise.resolve();
+let pendingWrites = 0;
+let loadErrors = [];
+let knownIndex = [];
+let lastResult = null;
+let downgradeToasted = false;
+let localBackup = [];
+let mirrorController = null;
+const cleanupCandidates = new Set();
 
-function openIdb() {
-  return new Promise((resolve, reject) => {
-    if (!window.indexedDB) return reject(new Error('浏览器不支持 IndexedDB'));
-    const req = window.indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => reject(new Error('IndexedDB 被占用'));
-  });
+function copyTemplates(templates) {
+  return (templates || []).map(({ id, name, content }) => ({ id, name, content }));
 }
 
-async function idbWriteAll(templates) {
-  const db = await openIdb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readwrite');
-    tx.objectStore(IDB_STORE).put(JSON.parse(JSON.stringify(templates)), IDB_KEY);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+// 同 ID 优先第一份，另一层独有 ID 仍保留；这里只合并本地备份，不推断跨端删除。
+function mergeBackups(preferred, other) {
+  const ids = new Set(preferred.map((item) => item.id));
+  return copyTemplates([...preferred, ...other.filter((item) => !ids.has(item.id))]);
 }
 
-async function idbReadAll() {
-  const db = await openIdb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(IDB_STORE, 'readonly');
-    const req = tx.objectStore(IDB_STORE).get(IDB_KEY);
-    req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : null);
-    req.onerror = () => reject(req.error);
-  });
+// 操作记录只允许标量字段，逐层取值，不能跨异步等待保留调用方对象。
+function copyOperations(operations) {
+  if (!Array.isArray(operations)) throw storageError('invalid', '模板操作必须为数组', true);
+  const scalar = (value) => typeof value === 'string' ? value : undefined;
+  const template = (value) => value ? { id: scalar(value.id), name: scalar(value.name), content: scalar(value.content) } : null;
+  return operations.map((op) => ({
+    kind: scalar(op?.kind), id: scalar(op?.id),
+    template: template(op?.template), base: template(op?.base), next: template(op?.next),
+  }));
 }
 
-// ---------- 旧 localStorage 兜底（迁移源 + 最终兜底层） ----------
+function storageError(code, message, noFallback = false) {
+  return Object.assign(new Error(message), { code, noFallback });
+}
+
+function checkActive(signal) {
+  if (signal && signal.aborted) throw storageError('unavailable', '模板操作超时或已取消');
+}
+
+// 即使 HTTP 包装器忽略 abort，等待也必须结束；迟到结果由 signal 检查隔离。
+async function waitForRequest(work, signal) {
+  checkActive(signal);
+  if (!signal) return work();
+  let abort;
+  const cancelled = new Promise((resolve, reject) => {
+    abort = () => reject(storageError('unavailable', '模板请求超时或已取消'));
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    const result = await Promise.race([work(), cancelled]);
+    checkActive(signal);
+    return result;
+  } finally { signal.removeEventListener('abort', abort); }
+}
+
+function getStContext() {
+  try { return window.SillyTavern?.getContext?.() || null; } catch (e) { return null; }
+}
+
+function headers() {
+  const value = getStContext()?.getRequestHeaders?.();
+  if (!value) throw storageError('unavailable', '酒馆上下文不可用');
+  return value;
+}
+
+function emitChanged() {
+  try { document.dispatchEvent(new CustomEvent('so-outline-templates-changed')); } catch (e) { /* 未挂载界面时忽略 */ }
+}
+
+function normalizeTemplates(value) {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  return value.filter((item) => {
+    if (!item || typeof item.id !== 'string' || !item.id || typeof item.name !== 'string' || typeof item.content !== 'string' || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  }).map(({ id, name, content }) => ({ id, name, content }));
+}
+
+function withDefault(templates, errors = []) {
+  const result = copyTemplates(templates);
+  if (!result.some((item) => item.id === 'default') && !errors.some((item) => item.id === 'default')) result.unshift({ ...DEFAULT_TEMPLATE });
+  return result;
+}
 
 function readLocalAll() {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    const arr = stored ? JSON.parse(stored) : null;
-    return Array.isArray(arr) ? arr : null;
-  } catch (e) {
-    return null;
-  }
+  try { return normalizeTemplates(JSON.parse(localStorage.getItem(STORAGE_KEY))); } catch (e) { return null; }
 }
 
 function writeLocalAll(templates) {
@@ -194,178 +106,422 @@ function writeLocalAll(templates) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
     return true;
   } catch (e) {
-    console.warn(LOG_PREFIX + 'localStorage 模板兜底写入失败（可能超 5MB 限制）:', e);
+    console.warn(LOG_PREFIX + 'localStorage 模板写入失败:', e);
     return false;
   }
 }
 
-// ---------- 对外接口 ----------
+// 只访问本插件的用户文件，防止损坏的索引把认证请求引向其他地址。
+function templateUrl(value) {
+  if (!value) return '';
+  const path = String(value).replace(/^\//, '');
+  if (!/^user\/files\/so-outline-tpl-[a-zA-Z0-9_.-]+$/.test(path)) throw storageError('unavailable', '模板索引包含无效文件路径');
+  return '/' + path;
+}
 
-// 把数组同步进内存缓存与当前层级的持久化。失败时返回 false（调用方决定提示口径）。
-export async function persistTemplates(templates) {
-  cache = templates;
-  // localStorage 兜底始终尽力写一份小模板（超限时静默跳过），保证 IndexedDB/服务端全挂时还有可用快照。
-  writeLocalAll(templates);
-  if (tier === STORAGE_TIER.SERVER) {
+function validateIndex(index) {
+  if (!Array.isArray(index)) throw storageError('unavailable', '模板索引格式错误');
+  const seen = new Set();
+  const result = [];
+  for (const item of index) {
+    if (!item || typeof item.id !== 'string' || !item.id || typeof item.name !== 'string' || typeof item.url !== 'string') throw storageError('unavailable', '模板索引条目损坏');
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    result.push({ id: item.id, name: item.name, url: templateUrl(item.url) });
+  }
+  return result;
+}
+
+async function loadServerIndex(signal) {
+  checkActive(signal);
+  const res = await waitForRequest(() => fetch('/user/files/' + TEMPLATE_SERVER_INDEX_FILE + '?t=' + Date.now(), { method: 'GET', headers: headers(), signal, cache: 'no-store' }), signal);
+  checkActive(signal);
+  if (res.status === 404) {
+    const mirror = getStContext()?.extensionSettings?.[TEMPLATE_SERVER_INDEX_KEY];
+    return { state: 'absent', index: mirror ? validateIndex(mirror) : [] };
+  }
+  if (!res.ok) throw storageError('unavailable', '读取模板索引失败 HTTP ' + res.status);
+  const body = await waitForRequest(() => res.json(), signal);
+  checkActive(signal);
+  return { state: 'ok', index: validateIndex(body && body.templates) };
+}
+
+async function downloadTemplateFile(url, signal) {
+  if (!url) return '';
+  checkActive(signal);
+  const res = await waitForRequest(() => fetch(templateUrl(url), { method: 'GET', headers: headers(), signal, cache: 'no-store' }), signal);
+  if (!res.ok) throw storageError('unavailable', '读取模板正文失败 HTTP ' + res.status);
+  const content = await waitForRequest(() => res.text(), signal);
+  checkActive(signal);
+  return content;
+}
+
+async function uploadTemplateFile(fileName, content, signal) {
+  checkActive(signal);
+  const data = btoa(unescape(encodeURIComponent(content)));
+  const res = await waitForRequest(() => fetch('/api/files/upload', { method: 'POST', headers: headers(), body: JSON.stringify({ name: fileName, data }), signal }), signal);
+  if (!res.ok) throw storageError('unavailable', '上传模板失败 HTTP ' + res.status);
+  const body = await waitForRequest(() => res.json(), signal);
+  checkActive(signal);
+  if (!body || !body.path) throw storageError('unavailable', '上传模板未返回文件路径');
+  return templateUrl(body.path);
+}
+
+function mirrorSettings(index) {
+  try {
+    const ctx = getStContext();
+    if (!ctx?.extensionSettings) return;
+    ctx.extensionSettings[TEMPLATE_SERVER_INDEX_KEY] = index.map((item) => ({ ...item }));
+    ctx.saveSettingsDebounced?.();
+  } catch (e) { console.warn(LOG_PREFIX + '模板索引镜像更新失败（权威索引已保存）:', e); }
+}
+
+function serverFileName(id, name) {
+  const safe = (String(name) + '_' + String(id)).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 130);
+  const revision = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 12);
+  return TEMPLATE_SERVER_FILE_PREFIX + safe + '_' + revision + '.txt';
+}
+
+async function readServerAll(index, signal, reuse = null) {
+  const templates = [];
+  const errors = [];
+  for (const meta of index) {
+    checkActive(signal);
+    const previous = reuse?.index.find((item) => item.id === meta.id && item.name === meta.name && item.url === meta.url);
+    const cached = previous && reuse.templates.find((item) => item.id === meta.id);
     try {
-      // 对照旧索引：被删除的模板、以及重命名导致文件名变化的旧文件，都在保存后清理，
-      // 避免 user/files/ 下残留孤儿 .txt。
-      const prevIndex = await loadServerIndex();
-      const prevById = new Map(prevIndex.map((m) => [m.id, m]));
-      const nextIds = new Set(templates.map((t) => t.id));
-      // 旧索引里已删除、且确实上传过文件的条目 → 待删孤儿文件（空 url 跳过）。
-      const orphanUrls = prevIndex.filter((m) => !nextIds.has(m.id) && m.url).map((m) => m.url);
-      const index = [];
-      for (const t of templates) {
-        const prev = prevById.get(t.id);
-        // 服务端对空 data 返回 400（新建模板内容可为空）：空内容不上传，只记索引条目；
-        // 若之前上传过文件（内容被清空），旧文件列入孤儿清理。
-        if (!t.content) {
-          if (prev && prev.url) orphanUrls.push(prev.url);
-          index.push({ id: t.id, name: t.name, url: '' });
-          continue;
-        }
-        const url = await uploadTemplateFile(serverFileName(t.id, t.name), t.content);
-        if (prev && prev.url && prev.url !== url) orphanUrls.push(prev.url);
-        index.push({ id: t.id, name: t.name, url });
-      }
-      await saveServerIndex(index);
-      for (const url of orphanUrls) {
+      const content = cached ? cached.content : await downloadTemplateFile(meta.url, signal);
+      templates.push({ id: meta.id, name: meta.name, content });
+    } catch (e) {
+      checkActive(signal);
+      errors.push({ ...meta, message: '正文未读取，暂不可编辑' });
+      console.warn(LOG_PREFIX + '模板正文未读取（保留索引）:', meta.id, e);
+    }
+  }
+  return { templates, errors };
+}
+
+// 数据库连接、事务与等待均可结束；事务完成才算成功，不把 put 请求成功当落盘。
+function idbAccess(mode, templates, signal) {
+  return new Promise((resolve, reject) => {
+    let db;
+    let tx;
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      db?.close();
+      if (error) reject(error); else resolve(value);
+    };
+    const abort = () => {
+      try { tx?.abort(); } catch (e) { /* 事务可能已完成 */ }
+      finish(storageError('unavailable', 'IndexedDB 操作超时或被占用'));
+    };
+    const timer = setTimeout(abort, STORAGE_TIMEOUT_MS);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) return abort();
+    try {
+      if (!window.indexedDB) throw new Error('浏览器不支持 IndexedDB');
+      const req = window.indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE);
+      };
+      req.onerror = () => finish(req.error || new Error('IndexedDB 打开失败'));
+      req.onblocked = () => finish(new Error('IndexedDB 被占用'));
+      req.onsuccess = () => {
+        db = req.result;
+        if (settled) { db.close(); return; }
         try {
-          await deleteTemplateFile(url);
-        } catch (e) {
-          console.warn(LOG_PREFIX + '清理服务端旧模板文件失败（不影响保存）:', url, e);
-        }
-      }
-      return true;
-    } catch (e) {
-      console.warn(LOG_PREFIX + '服务端保存失败，降级 IndexedDB:', e);
-      tier = STORAGE_TIER.IDB;
-      notifyDowngrade();
+          tx = db.transaction(IDB_STORE, mode);
+          let value;
+          tx.onerror = tx.onabort = () => finish(tx.error || new Error('IndexedDB 事务失败'));
+          tx.oncomplete = () => finish(null, value);
+          const store = tx.objectStore(IDB_STORE);
+          if (mode === 'readwrite') store.put(copyTemplates(templates), IDB_KEY);
+          else {
+            const read = store.get(IDB_KEY);
+            read.onsuccess = () => { value = normalizeTemplates(read.result); };
+            read.onerror = () => finish(read.error || new Error('IndexedDB 读取失败'));
+          }
+        } catch (e) { finish(e); }
+      };
+    } catch (e) { finish(e); }
+  });
+}
+
+async function waitForStContext(signal) {
+  const start = Date.now();
+  while (!getStContext()?.getRequestHeaders) {
+    checkActive(signal);
+    if (Date.now() - start >= 5000) return false;
+    await new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, 300);
+      signal.addEventListener('abort', done, { once: true });
+    });
+  }
+  return true;
+}
+
+function sameTemplate(a, b) {
+  return !!a && !!b && a.name === b.name && a.content === b.content;
+}
+
+function applyOperations(templates, ops, errors) {
+  const map = new Map(copyTemplates(templates).map((item) => [item.id, item]));
+  const seen = new Set();
+  for (const op of ops) {
+    const id = op.kind === 'add' ? op.template?.id : op.id;
+    if (!id || seen.has(id)) throw storageError('invalid', '模板操作重复或缺少 ID', true);
+    seen.add(id);
+    if (errors.some((item) => item.id === id)) throw storageError('unavailable', '目标模板未成功读取，请刷新后重试', true);
+    if (op.kind === 'add') {
+      const value = normalizeTemplates([op.template]);
+      if (!value?.length || map.has(id)) throw storageError('conflict', '新增模板 ID 已存在或数据无效', true);
+      map.set(id, value[0]);
+    } else {
+      const current = map.get(id);
+      if (!sameTemplate(current, op.base)) throw storageError('conflict', '模板已变化，草稿已保留，请刷新或另存', true);
+      if (op.kind === 'delete' && id !== 'default') map.delete(id);
+      else if (op.kind === 'update' && typeof op.next?.name === 'string' && typeof op.next?.content === 'string') map.set(id, { id, name: op.next.name, content: op.next.content });
+      else throw storageError('invalid', '不支持的模板操作', true);
     }
   }
-  if (tier === STORAGE_TIER.IDB) {
+  return [...map.values()];
+}
+
+function indexMatches(a, b) {
+  return a.length === b.length && a.every((item) => b.some((other) => other.id === item.id && other.name === item.name && other.url === item.url));
+}
+
+async function commitServer(ops, candidate, signal, sourceIndex = knownIndex) {
+  const current = (await loadServerIndex(signal)).index;
+  const next = new Map(current.map((item) => [item.id, { ...item }]));
+  // 先核验所有目标，再开始上传；读取失败不能当作空正文或普通网络降级。
+  for (const op of ops) {
+    const id = op.kind === 'add' ? op.template.id : op.id;
+    const meta = next.get(id);
+    if (op.kind === 'add') {
+      if (meta) throw storageError('conflict', '另一端已有相同 ID 的模板', true);
+    } else {
+      if (!meta) throw storageError('conflict', '目标模板已被另一端删除', true);
+      let content;
+      try { content = await downloadTemplateFile(meta.url, signal); } catch (e) { throw storageError('unavailable', '无法核对目标正文，草稿已保留', true); }
+      if (!sameTemplate({ name: meta.name, content }, op.base)) throw storageError('conflict', '另一端已修改目标模板，草稿已保留', true);
+    }
+  }
+  for (const op of ops) {
+    const id = op.kind === 'add' ? op.template.id : op.id;
+    const old = next.get(id);
+    if (op.kind === 'delete') next.delete(id);
+    else {
+      const template = candidate.find((item) => item.id === id);
+      const url = template.content ? await uploadTemplateFile(serverFileName(id, template.name), template.content, signal) : '';
+      if (url) cleanupCandidates.add(url);
+      next.set(id, { id, name: template.name, url });
+    }
+    if (old?.url) cleanupCandidates.add(old.url);
+  }
+  const index = [...next.values()];
+  await uploadTemplateFile(TEMPLATE_SERVER_INDEX_FILE, JSON.stringify({ templates: index }), signal);
+  const verified = await loadServerIndex(signal);
+  if (verified.state !== 'ok' || !indexMatches(index, verified.index)) throw storageError('conflict', '索引写后检查发现竞争，请保留草稿并刷新', true);
+  // 权威提交已核验：只同步组装已知正文，不再等待未触及项目或本地镜像。
+  const touched = new Set(ops.map((op) => op.template?.id || op.id));
+  const templates = [];
+  const errors = [];
+  for (const meta of index) {
+    const reusable = touched.has(meta.id) || sourceIndex.some((item) => item.id === meta.id && item.name === meta.name && item.url === meta.url);
+    const cached = reusable && candidate.find((item) => item.id === meta.id);
+    if (cached || !meta.url) templates.push({ id: meta.id, name: meta.name, content: cached ? cached.content : '' });
+    else errors.push({ ...meta, message: '正文未读取，暂不可编辑' });
+    cleanupCandidates.delete(meta.url);
+  }
+  mirrorSettings(index);
+  return { index, templates, errors };
+}
+
+function backupFor(candidate) {
+  const unreadIds = new Set(loadErrors.map((item) => item.id));
+  const preserved = mergeBackups(localBackup, readLocalAll() || []).filter((item) => unreadIds.has(item.id));
+  return mergeBackups(candidate, preserved);
+}
+
+async function saveLocal(candidate) {
+  const backup = backupFor(candidate);
+  // HTTP/前一层超时不能取消下一层兜底；已处于 local 时不再等待已知不可用的 IDB。
+  if (tier !== STORAGE_TIER.LOCAL) {
     try {
-      await idbWriteAll(templates);
-      return true;
-    } catch (e) {
-      console.warn(LOG_PREFIX + 'IndexedDB 写入失败，降级 localStorage:', e);
-      tier = STORAGE_TIER.LOCAL;
-      notifyDowngrade();
-    }
+      await idbAccess('readwrite', backup);
+      localBackup = copyTemplates(backup);
+      writeLocalAll(backup);
+      return STORAGE_TIER.IDB;
+    } catch (e) { console.warn(LOG_PREFIX + 'IndexedDB 模板保存不可用:', e); }
   }
-  return writeLocalAll(templates);
+  if (writeLocalAll(backup)) {
+    localBackup = copyTemplates(backup);
+    return STORAGE_TIER.LOCAL;
+  }
+  throw storageError('quota', '所有模板存储层均保存失败，草稿未保存');
 }
 
-// 同步读：初始化完成前读 localStorage（旧行为），完成后读内存缓存。
-// 返回浅拷贝：调用方（templates.js / ui.js）会直接 push/splice 这个数组，
-// 不能让它们改到缓存本体（否则 addTemplate 内部 push 一次 + UI 再 push 一次会出现重复项）。
-export function getCachedTemplates() {
-  if (!initialized) {
-    const local = readLocalAll();
-    return local && local.length ? local.slice() : null;
-  }
-  return cache ? cache.slice() : null;
-}
-
-export function currentTier() {
-  return tier;
+function startLocalMirror(templates) {
+  const backup = copyTemplates(templates);
+  if (writeLocalAll(backup)) localBackup = copyTemplates(backup);
+  const controller = new AbortController();
+  mirrorController = controller;
+  // 不阻塞已提交结果；下一笔写入前取消旧镜像，禁止迟到事务倒写。
+  void idbAccess('readwrite', backup, controller.signal).then(() => {
+    if (!controller.signal.aborted) localBackup = copyTemplates(backup);
+  }).catch(() => {}).finally(() => {
+    if (mirrorController === controller) mirrorController = null;
+  });
 }
 
 function notifyDowngrade() {
   if (downgradeToasted) return;
   downgradeToasted = true;
+  const label = tier === STORAGE_TIER.IDB ? 'IndexedDB' : 'localStorage';
   import('./toast.js').then(({ showToast }) => {
-    showToast('模板服务端存储暂不可用，已降级保存到本浏览器（IndexedDB），下次会话将尝试自动恢复同步。', 'warning');
+    showToast('模板仅保存到本浏览器（' + label + '），尚未同步服务端。', 'warning');
   }).catch(() => {});
 }
 
-// 等酒馆上下文就绪（插件挂载早于酒馆设置加载完成时 getRequestHeaders 可能还不可用），最多 5 秒。
-async function waitForStContext(timeoutMs = 5000) {
-  const start = Date.now();
-  for (;;) {
-    const ctx = getStContext();
-    if (ctx && typeof ctx.getRequestHeaders === 'function') return ctx;
-    if (Date.now() - start >= timeoutMs) return null;
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
+export function initTemplateStorage() {
+  if (initPromise) return initPromise;
+  const controller = new AbortController();
+  let fallback = readLocalAll() || [];
+  let fallbackTier = STORAGE_TIER.LOCAL;
+  initPromise = (async () => {
+    let timeout;
+    // 总期限先于各层计时器建立，避免某层恰好在15秒拒绝后又继续初始化。
+    const deadline = new Promise((resolve, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(storageError('unavailable', '模板初始化超过15秒，使用本地快照'));
+      }, STORAGE_TIMEOUT_MS);
+    });
+    const work = (async () => {
+      try {
+        const local = await idbAccess('readonly', null, controller.signal);
+        if (local) { fallback = mergeBackups(local, fallback); fallbackTier = STORAGE_TIER.IDB; }
+      } catch (e) { checkActive(controller.signal); }
+      if (!(await waitForStContext(controller.signal))) throw storageError('unavailable', '酒馆上下文尚未就绪');
+      const state = await loadServerIndex(controller.signal);
+      const snapshot = await readServerAll(state.index, controller.signal);
+      const ids = new Set(state.index.map((item) => item.id));
+      // 仅按明确新增提交旧版迁移项；不回写整表或清理未读取的条目。
+      const additions = fallback.filter((item) => !ids.has(item.id));
+      if (!ids.has('default') && !additions.some((item) => item.id === 'default')) additions.unshift({ ...DEFAULT_TEMPLATE });
+      const templates = [...snapshot.templates, ...additions];
+      if (additions.length || state.state === 'absent') {
+        const result = await commitServer(additions.map((template) => ({ kind: 'add', template })), templates, controller.signal, state.index);
+        return { tier: STORAGE_TIER.SERVER, ...result };
+      }
+      mirrorSettings(state.index);
+      return { tier: STORAGE_TIER.SERVER, index: state.index, ...snapshot };
+    })();
+    try {
+      const result = await Promise.race([work, deadline]);
+      cache = copyTemplates(result.templates);
+      knownIndex = result.index;
+      loadErrors = result.errors;
+      tier = result.tier;
+    } catch (e) {
+      controller.abort();
+      cache = withDefault(fallback);
+      tier = fallbackTier;
+      console.warn(LOG_PREFIX + '模板初始化降级，保留本地快照:', e);
+    } finally {
+      clearTimeout(timeout);
+      localBackup = copyTemplates(fallback);
+      initialized = true;
+      emitChanged();
+    }
+  })();
+  return initPromise;
 }
 
-// 启动初始化：localStorage → IndexedDB → 服务端 三级探测，选定层级后补齐内存缓存。
-// 顺序：有服务端索引则服务端为准（多端一致性）；无则用 IndexedDB/localStorage 快照，
-// 并把其独有的模板补传服务端。旧 localStorage key 保留不删（兜底备份）。
-export async function initTemplateStorage() {
-  if (initialized) return;
-  try {
-    const local = readLocalAll() || [];
-    let idbTemplates = null;
-    try {
-      idbTemplates = await idbReadAll();
-    } catch (e) {
-      console.warn(LOG_PREFIX + 'IndexedDB 不可用:', e);
-    }
-
-    let serverOk = false;
-    let serverIndex = [];
-    try {
-      serverOk = !!(await waitForStContext());
-      if (serverOk) serverIndex = await loadServerIndex();
-    } catch (e) {
-      serverOk = false;
-    }
-
-    if (serverOk) {
-      tier = STORAGE_TIER.SERVER;
-      let serverTemplates = null;
-      if (serverIndex.length > 0) {
-        serverTemplates = await readServerAll();
-      }
-      // 合并：服务端为准，本地快照里服务端没有的（id 不在索引）补传上去。
-      const serverIds = new Set(serverIndex.map((m) => m.id));
-      // 本地快照 + IndexedDB 里服务端没有的模板 → 补传。按 id 去重（降级会话可能两层都写了同一条）。
-      const orphanSeen = new Set();
-      const orphans = local.concat(idbTemplates || []).filter((t) => {
-        if (!t || !t.id || serverIds.has(t.id) || templatesHas(serverTemplates, t.id)) return false;
-        if (orphanSeen.has(t.id)) return false;
-        orphanSeen.add(t.id);
-        return true;
-      });
-      const merged = (serverTemplates || []).concat(orphans);
-      const defaultMissing = !merged.some((t) => t && t.id === 'default');
-      // 自愈：settings 副本被其他标签页覆盖丢失、但索引文件还在时，把副本恢复回去。
-      if (serverIndex.length > 0 && !readSettingsIndex()) {
-        await saveServerIndex(serverIndex);
-      }
-      if (orphans.length > 0 || (serverIndex.length === 0 && local.length > 0) || defaultMissing) {
-        const base = merged.length ? merged : local;
-        if (base.length) await persistTemplates(base);
-      }
-      cache = merged.length ? merged : local;
-    } else if (idbTemplates && idbTemplates.length) {
-      tier = STORAGE_TIER.IDB;
-      cache = idbTemplates;
-    } else {
-      tier = STORAGE_TIER.LOCAL;
-      cache = local;
-    }
-
-    if (!cache.some((t) => t && t.id === 'default')) {
-      const { DEFAULT_TEMPLATE } = await import('./constants.js');
-      cache = [DEFAULT_TEMPLATE].concat(cache);
-      await persistTemplates(cache);
-    }
-    console.log(LOG_PREFIX + '模板存储已就绪，层级: ' + tier + '，模板数: ' + cache.length);
-    // 通知 UI：异步初始化（服务端拉取 / 迁移）完成后主下拉与已展开的管理表单需要刷新。
-    try { document.dispatchEvent(new CustomEvent('so-outline-templates-changed')); } catch (e) { /* ignore */ }
-  } catch (e) {
-    console.warn(LOG_PREFIX + '模板存储初始化失败，维持 localStorage 行为:', e);
-    tier = STORAGE_TIER.LOCAL;
-    cache = readLocalAll() || [];
-  } finally {
-    initialized = true;
-  }
+export function getCachedTemplates() {
+  return copyTemplates(initialized ? cache : readLocalAll());
 }
 
-function templatesHas(templates, id) {
-  return Array.isArray(templates) && templates.some((t) => t && t.id === id);
+export function currentTier() { return tier; }
+
+export function getTemplateStorageStatus() {
+  return {
+    ready: initialized,
+    busy: pendingWrites > 0,
+    tier,
+    loadErrors: loadErrors.map((item) => ({ ...item })),
+    lastResult: lastResult ? { ...lastResult } : null,
+  };
+}
+
+function enqueueWrite(job) {
+  pendingWrites++;
+  emitChanged();
+  const next = writeTail.then(job, job);
+  writeTail = next.catch(() => {});
+  return next.finally(() => { pendingWrites--; emitChanged(); });
+}
+
+export function commitTemplateOperations(operations) {
+  let queuedOperations;
+  let inputError;
+  try { if (typeof operations !== 'function') queuedOperations = copyOperations(operations); }
+  catch (e) { inputError = e; }
+  return enqueueWrite(async () => {
+    await initTemplateStorage();
+    mirrorController?.abort();
+    mirrorController = null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), STORAGE_TIMEOUT_MS);
+    try {
+      if (inputError) throw inputError;
+      const ops = typeof operations === 'function' ? copyOperations(operations(getCachedTemplates())) : queuedOperations;
+      const candidate = applyOperations(cache, ops, loadErrors);
+      let savedTier = tier;
+      let snapshot = null;
+      if (ops.length) {
+        if (tier === STORAGE_TIER.SERVER) {
+          try { snapshot = await commitServer(ops, candidate, controller.signal); }
+          catch (e) {
+            if (e.noFallback || e.code === 'conflict') throw e;
+            console.warn(LOG_PREFIX + '服务端提交失败，尝试本地保存:', e);
+          }
+        }
+        // HTTP 等待到此为止。已核验提交和独立本地兜底不再受该计时器影响。
+        clearTimeout(timeout);
+        if (!snapshot) savedTier = await saveLocal(candidate);
+        cache = snapshot ? snapshot.templates : candidate;
+        if (snapshot) { knownIndex = snapshot.index; loadErrors = snapshot.errors; }
+        tier = savedTier;
+        // 部分读取也镜像已确认操作；仅补回仍未读项的备份，不保留已删除项。
+        if (snapshot) startLocalMirror(backupFor(cache));
+        if (tier !== STORAGE_TIER.SERVER) notifyDowngrade();
+      }
+      lastResult = { ok: true, tier, code: 'saved' };
+      return { ...lastResult, templates: getCachedTemplates() };
+    } catch (e) {
+      lastResult = { ok: false, tier, code: e.code || 'unavailable', error: e.message || '模板保存失败' };
+      console.warn(LOG_PREFIX + '模板操作未保存:', e);
+      return { ...lastResult, templates: getCachedTemplates() };
+    } finally { clearTimeout(timeout); }
+  });
+}
+
+// 兼容旧调用，但数组缺项不是删除；公开 CRUD 改走明确操作与编辑基准。
+export async function persistTemplates(templates) {
+  const desired = normalizeTemplates(templates);
+  if (!desired || desired.length !== templates.length) return false;
+  const before = getCachedTemplates();
+  const result = await commitTemplateOperations((current) => desired.flatMap((next) => {
+    const base = before.find((item) => item.id === next.id) || current.find((item) => item.id === next.id);
+    if (!base) return [{ kind: 'add', template: next }];
+    return sameTemplate(base, next) ? [] : [{ kind: 'update', id: next.id, base, next }];
+  }));
+  return result.ok;
 }

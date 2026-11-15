@@ -1,66 +1,81 @@
 // 模块：大纲模板存储
-// 作用：管理大纲模板的持久化、默认模板补齐和当前模板选择。
-// 持久化走 storage.js 三层存储（服务端文件 / IndexedDB / localStorage），
-// 对外保持同步读接口（内存缓存），写操作异步落盘。
-// 保留旧 localStorage key，确保从旧版迁移过来的用户模板不丢失。
+// 作用：模板 CRUD 按明确操作串行提交；生成选择独立于 DOM，保留旧存储 key。
 import { DEFAULT_TEMPLATE, LOG_PREFIX, SELECTED_TEMPLATE_KEY } from './constants.js';
-import { getCachedTemplates, persistTemplates } from './storage.js';
+import { commitTemplateOperations, getCachedTemplates, getTemplateStorageStatus, persistTemplates } from './storage.js';
+
+let selectedId = null;
 
 export function getTemplates() {
-  const templates = getCachedTemplates();
-  if (!templates || !templates.length) return [DEFAULT_TEMPLATE];
-  if (!templates.find((t) => t && t.id === 'default')) templates.unshift(DEFAULT_TEMPLATE);
+  const templates = getCachedTemplates() || [];
+  const missingDefault = getTemplateStorageStatus().loadErrors.some((item) => item.id === 'default');
+  if (!templates.some((item) => item.id === 'default') && !missingDefault) templates.unshift({ ...DEFAULT_TEMPLATE });
   return templates;
 }
 
-// 把内存里的模板数组落盘。返回 Promise<boolean>，UI 层可 await 后提示成功/失败。
+// 旧全表入口只合并新增/修改，缺项不能代替显式删除。
 export async function saveTemplates(templates) {
-  try {
-    return await persistTemplates(templates);
-  } catch (e) {
-    console.error(LOG_PREFIX + '模板保存失败:', e);
-    return false;
-  }
+  try { return await persistTemplates(templates); }
+  catch (e) { console.error(LOG_PREFIX + '模板保存失败:', e); return false; }
+}
+
+export async function addTemplates(candidates) {
+  let created = [];
+  const result = await commitTemplateOperations((current) => {
+    const names = new Set(current.map((item) => item.name));
+    created = candidates.map((candidate) => {
+      const base = candidate.name || '新模板';
+      let name = base;
+      let suffix = 2;
+      while (names.has(name)) name = base + '（' + suffix++ + '）';
+      names.add(name);
+      return {
+        id: 'template_' + Date.now() + '_' + Math.random().toString(36).slice(2, 12),
+        name,
+        content: candidate.content || '',
+      };
+    });
+    return created.map((template) => ({ kind: 'add', template }));
+  });
+  return result.ok ? created : null;
 }
 
 export async function addTemplate(name, content) {
-  const templates = getTemplates();
-  const newTemplate = {
-    // 加随机尾巴：Date.now() 在快速连点时可能同毫秒撞车，而 id 是跨存储层的同步主键，必须唯一。
-    id: 'template_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-    name: name || '新模板',
-    content: content || '',
-  };
-  templates.push(newTemplate);
-  const ok = await saveTemplates(templates);
-  return ok ? newTemplate : null;
+  const created = await addTemplates([{ name, content }]);
+  return created ? created[0] : null;
 }
 
-export async function updateTemplate(id, updates) {
-  const templates = getTemplates();
-  const index = templates.findIndex((t) => t.id === id);
-  if (index === -1) return false;
-  templates[index] = Object.assign({}, templates[index], updates);
-  return saveTemplates(templates);
+export async function updateTemplate(id, updates, options = {}) {
+  const base = options.base ? { name: options.base.name, content: options.base.content } : null;
+  const change = { ...updates };
+  const result = await commitTemplateOperations((current) => {
+    const previous = current.find((item) => item.id === id);
+    return [{ kind: 'update', id, base: base || previous, next: { name: change.name ?? previous?.name, content: change.content ?? previous?.content } }];
+  });
+  return result.ok;
 }
 
-export async function deleteTemplate(id) {
+export async function deleteTemplate(id, options = {}) {
   if (id === 'default') return false;
-  const templates = getTemplates();
-  return saveTemplates(templates.filter((t) => t.id !== id));
+  const base = options.base ? { name: options.base.name, content: options.base.content } : null;
+  const result = await commitTemplateOperations((current) => [{ kind: 'delete', id, base: base || current.find((item) => item.id === id) }]);
+  return result.ok;
 }
 
 export function getTemplate(id) {
+  if (getTemplateStorageStatus().loadErrors.some((item) => item.id === id)) return null;
   const templates = getTemplates();
-  return templates.find((t) => t.id === id) || templates[0] || DEFAULT_TEMPLATE;
+  return templates.find((item) => item.id === id) || templates[0] || null;
 }
 
 export function selectedTemplateId() {
-  const select = document.getElementById('so-outline-template-select');
-  if (select && select.value) return select.value;
-  return localStorage.getItem(SELECTED_TEMPLATE_KEY) || 'default';
+  if (selectedId) return selectedId;
+  try { selectedId = localStorage.getItem(SELECTED_TEMPLATE_KEY) || 'default'; }
+  catch (e) { selectedId = 'default'; }
+  return selectedId;
 }
 
 export function saveSelectedTemplate(id) {
-  localStorage.setItem(SELECTED_TEMPLATE_KEY, id);
+  selectedId = id || 'default';
+  try { localStorage.setItem(SELECTED_TEMPLATE_KEY, selectedId); }
+  catch (e) { console.warn(LOG_PREFIX + '模板选择仅本页生效:', e); }
 }

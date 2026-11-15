@@ -6,6 +6,7 @@ export const REQUIRED_API_VERSION = 1;
 export const STORAGE_KEY = "so_outline_templates";
 export const SELECTED_TEMPLATE_KEY = "so_outline_template_selected";
 export const OUTLINE_INCLUDE_ALL_CHAT_KEY = "so_outline_include_all_chat";
+export const OUTLINE_INCLUDE_PLOT_GUIDES_KEY = "so_outline_include_enabled_plot_guides";
 // 服务端存储（层 1）：user/files/ 下模板文件的统一文件名前缀，以及酒馆
 // extensionSettings 里的索引 key（存 [{id, name, url}]，正文在文件里）。
 // 索引同时在 user/files/ 落一份自己的 JSON 文件：settings.json 是整文件覆盖式保存，

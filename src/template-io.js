@@ -3,18 +3,13 @@
 // 导入的文件：文件名（去 .txt 后缀）= 模板名，文件全文 = 模板内容；重名自动加「（2）」后缀，不覆盖。
 // 导出的文件：'<模板名>.txt'，可直接再导入，形成分享闭环。
 import { LOG_PREFIX } from './constants.js';
-import { addTemplate, getTemplates, getTemplate } from './templates.js';
+import { addTemplates, getTemplate } from './templates.js';
+import { currentTier } from './storage.js';
 import { showToast } from './toast.js';
 
 const TXT_EXT = /\.txt$/i;
 
-function uniqueTemplateName(name, templates) {
-  const base = name || '导入模板';
-  if (!templates.some((t) => t.name === base)) return base;
-  let n = 2;
-  while (templates.some((t) => t.name === base + '（' + n + '）')) n++;
-  return base + '（' + n + '）';
-}
+// 同一批导入在存储写队列中计算重名后缀，不逐个保存整张模板表。
 
 // 读取 File 对象文本。File.text() 在旧浏览器缺失时退回 FileReader。
 function readAsText(file) {
@@ -34,21 +29,26 @@ export async function importTemplatesFromFiles(files) {
     showToast('未选择 .txt 文件', 'warning');
     return 0;
   }
-  let imported = 0;
+  const candidates = [];
   for (const file of list) {
     try {
       const content = await readAsText(file);
-      const name = uniqueTemplateName(file.name.replace(TXT_EXT, ''), getTemplates());
-      const created = await addTemplate(name, content);
-      if (created) imported++;
-      else showToast('模板「' + name + '」保存失败，内容过大或存储不可用', 'error');
+      candidates.push({ name: file.name.replace(TXT_EXT, '') || '导入模板', content });
     } catch (e) {
-      console.warn(LOG_PREFIX + '导入模板失败:', file.name, e);
-      showToast('导入「' + file.name + '」失败: ' + (e && e.message ? e.message : e), 'error');
+      console.warn(LOG_PREFIX + '导入模板读取失败:', file.name, e);
+      showToast('读取「' + file.name + '」失败，其他可读文件仍会导入', 'error');
     }
   }
-  if (imported > 0) showToast('已导入 ' + imported + ' 个模板');
-  return imported;
+  if (!candidates.length) return 0;
+  const created = await addTemplates(candidates);
+  if (!created) {
+    showToast('导入未保存，请保留原文件后重试', 'error');
+    return 0;
+  }
+  const tier = currentTier();
+  const destination = tier === 'server' ? '服务端' : '本浏览器（' + (tier === 'idb' ? 'IndexedDB' : 'localStorage') + '，尚未同步服务端）';
+  showToast('已导入 ' + created.length + ' 个模板到' + destination, tier === 'server' ? 'success' : 'warning');
+  return created.length;
 }
 
 // 导出单个模板为 .txt 下载。

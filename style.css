@@ -15,6 +15,26 @@
   display: none !important;
 }
 
+/* 仅隐藏大纲未接入的入口；退出模式不影响本体及其它扩展菜单。 */
+#so-window.so-outline-on[data-so-outline-menu="true"] #so-chat-menu [data-so-chat-menu="regex"],
+#so-window.so-outline-on[data-so-outline-menu="true"] #so-chat-menu #so-kb-btn,
+#so-window.so-outline-on[data-so-outline-menu="true"] #so-chat-menu #so-bigsum-btn {
+  display: none !important;
+}
+
+#so-window.so-outline-on[data-so-outline-floors="blocked"] #so-chat-menu #so-keepfloors-btn,
+#so-window.so-outline-on[data-so-outline-floors="blocked"] #so-chat-menu #so-floors-btn {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.so-outline-floor-note {
+  padding: 6px 0;
+  font-size: 0.82em;
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+
 /* 旧 settings-panel 补丁能力：打开设置时铺满神谕主面板。 */
 #so-settings.open {
   max-height: 100% !important;
@@ -84,6 +104,36 @@
   white-space: nowrap;
 }
 
+.so-outline-action-row {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+.so-outline-context-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.so-outline-context-option {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.so-outline-context-option .so-checkbox-field {
+  align-items: center;
+  margin: 0;
+  padding: 2px 0;
+}
+.so-outline-context-option .so-checkbox-field span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.so-outline-context-option input {
+  flex-shrink: 0;
+}
+
 .so-checkbox-field {
   display: flex;
   align-items: center;
@@ -140,6 +190,7 @@
 }
 
 #so-outline-fix-tags {
+  margin-left: auto;
   white-space: nowrap;
 }
 
@@ -172,6 +223,28 @@
   min-height: 120px;
   font-family: "Consolas", "Monaco", monospace;
   font-size: 0.85em;
+}
+
+/* 状态与未保存草稿确认只作用于大纲栏，窄屏允许换行。 */
+.so-outline-storage-status {
+  font-size: 0.78em;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  opacity: 0.85;
+}
+.so-outline-leave-guard {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
+  border-radius: 8px;
+}
+.so-outline-template-selector input:disabled,
+.so-outline-template-selector textarea:disabled,
+.so-outline-template-selector select:disabled {
+  opacity: 0.6;
 }
 
 /* 模板管理表单操作行：五个小按钮（新建/保存/删除/导入/导出）同款紧凑样式，手机端允许换行。 */
@@ -225,14 +298,6 @@
   .so-outline-row {
     flex-direction: row;
     align-items: center;
-  }
-  .so-outline-action-row .so-checkbox-field {
-    min-width: 0;
-  }
-  .so-outline-action-row .so-checkbox-field span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .so-outline-template-row .so-outline-compact-check {
     align-self: center;

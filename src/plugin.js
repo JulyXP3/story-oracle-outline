@@ -8,14 +8,15 @@ import { registerMessageActions } from './message-actions.js';
 import { setStoryOracleApi } from './outline-inject.js';
 import { migrateFinalModeState } from './migrate-final-mode.js';
 import { initTemplateStorage } from './storage.js';
+import { createOutlineModeCompat } from './mode-compat.js';
 
 export function registerOutlinePlugin(api) {
-  setStoryOracleApi(api);
   if (!api || typeof api.isCompatible !== 'function' || !api.isCompatible(REQUIRED_API_VERSION)) {
     console.warn(LOG_PREFIX + '需要 Story Oracle Hook API v' + REQUIRED_API_VERSION + '，当前为 v' + (api && api.version) + '，跳过挂载。');
     return;
   }
 
+  setStoryOracleApi(api);
   // 模板存储初始化（服务端文件 / IndexedDB / localStorage 三层）：不阻塞挂载，
   // 后台探测层级并迁移旧 localStorage 模板；初始化完成前读接口回落 localStorage 快照。
   initTemplateStorage().catch((e) => console.warn(LOG_PREFIX + '模板存储初始化异常:', e));
@@ -24,6 +25,12 @@ export function registerOutlinePlugin(api) {
   // 必须在 registerMode 之前跑——它只改本体 settings，与大纲模式注册无依赖，但越早还原连接配置越好。
   migrateFinalModeState(api);
 
+  const compat = createOutlineModeCompat();
+  const enterOutline = () => {
+    const canAdapt = compat.beforeEnter();
+    const room = syncOutlineModeRoom(api);
+    compat.enter(room, canAdapt);
+  };
   const registered = api.registerMode({
     id: 'outline',
     icon: 'fa-solid fa-list-check',
@@ -32,7 +39,8 @@ export function registerOutlinePlugin(api) {
     placeholder: '你需要什么样的大纲? 别忘了选择大纲模板捏~',
     order: 'before:advisor',
     buildBar: buildOutlineBar,
-    onEnter: syncOutlineModeRoom,
+    onEnter: enterOutline,
+    onExit: compat.exit,
     onSend: buildOutlineSend,
     render: 'markdown',
     stripReasoning: false,
@@ -46,6 +54,8 @@ export function registerOutlinePlugin(api) {
   registerMessageActions(api);
   injectOutlineSysPrompt(api);
   injectOutlineModeRoom(api);
+  // 冷启动恢复大纲时，注册回调可能早于独立房间补丁，补丁就绪后再幂等确认一次。
+  if (document.getElementById('so-window')?.classList.contains('so-outline-on')) enterOutline();
   console.log(LOG_PREFIX + '已通过 StoryOracleAPI v' + api.version + ' 挂载大纲模式。');
 }
 
@@ -99,10 +109,11 @@ function injectOutlineModeRoom(api) {
 function syncOutlineModeRoom(api) {
   // 进入大纲模式时 bar 已挂载可见：兜底刷新模板下拉（覆盖存储异步初始化晚于 bar 构建的情况）。
   try { refreshOutlineBarTemplates(); } catch (e) { /* ignore */ }
-  if (!api.unsafe || typeof api.unsafe.eval !== 'function') return;
+  if (!api.unsafe || typeof api.unsafe.eval !== 'function') return null;
   try {
-    api.unsafe.eval('syncConvoStream()');
+    return api.unsafe.eval('syncConvoStream(); convoStreamKey');
   } catch (e) {
-    console.warn(LOG_PREFIX + '切换到大纲独立聊天记录失败:', e);
+    console.warn(LOG_PREFIX + '切换到大纲独立聊天记录失败，未确认房间。');
+    return null;
   }
 }
