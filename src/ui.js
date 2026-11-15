@@ -24,7 +24,7 @@ function storageLabel(status) {
   if (status.busy) return '正在保存模板…';
   if (status.lastResult?.ok === false) return '未保存：' + (status.lastResult.error || '请保留草稿后重试');
   const location = status.tier === 'server' ? '后端' : '本浏览器（' + (status.tier === 'idb' ? 'IndexedDB' : 'localStorage') + '，尚未同步后端）';
-  return (status.lastResult?.ok ? '已保存到' : '当前模板读取来源: ') + location + (status.loadErrors.length ? '；部分模板未加载，暂不可编辑' : '');
+  return (status.lastResult?.ok ? '已保存到' : '当前读取: ') + location + (status.loadErrors.length ? '；部分模板未加载，暂不可编辑' : '');
 }
 
 function populateTemplateSelector(select) {
